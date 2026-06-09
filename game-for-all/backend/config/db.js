@@ -1,36 +1,31 @@
-const dotenv = require('dotenv');
 const mysql = require('mysql2/promise');
-
-dotenv.config();
-
-const dbConfig = {
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 8889),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || 'root',
-  database: process.env.DB_NAME || 'game_for_all',
-};
+require('dotenv').config();
 
 const pool = mysql.createPool({
-  ...dbConfig,
+  host: process.env.DB_HOST,
+  port: Number(process.env.DB_PORT),
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: Number(process.env.DB_CONNECTION_LIMIT || 10),
-  queueLimit: 0,
-  dateStrings: true,
+  connectionLimit: 10,
+  ssl: {
+    rejectUnauthorized: false // هذا ضروري جداً لـ Aiven
+  }
 });
 
 async function connectDB() {
-  const connection = await pool.getConnection();
   try {
+    const connection = await pool.getConnection();
     await connection.ping();
+    connection.release();
     return {
       connected: true,
-      host: dbConfig.host,
-      port: dbConfig.port,
-      database: dbConfig.database,
+      message: 'Database connected successfully',
     };
-  } finally {
-    connection.release();
+  } catch (error) {
+    console.error('Database connection failed:', error.message);
+    throw error;
   }
 }
 
@@ -40,7 +35,6 @@ async function query(sql, params = []) {
 }
 
 module.exports = {
-  pool,
   connectDB,
   query,
 };
