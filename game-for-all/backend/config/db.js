@@ -1,5 +1,5 @@
 const mysql = require('mysql2/promise');
-require('dotenv').config();
+require('dotenv').config({ override: true });
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -8,11 +8,14 @@ const pool = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   waitForConnections: true,
-  connectionLimit: 10,
-  ssl: {
-    rejectUnauthorized: false // هذا ضروري جداً لـ Aiven
-  }
+  connectionLimit: 10
 });
+
+console.log('--- DB CONFIG LOG ---');
+console.log('Host:', process.env.DB_HOST);
+console.log('User:', process.env.DB_USER);
+console.log('Password is set?', !!process.env.DB_PASSWORD);
+console.log('---------------------');
 
 async function connectDB() {
   try {

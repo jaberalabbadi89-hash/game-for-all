@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import './App.css';
+import { useRBAC } from './hooks/useRBAC';
+import { HeroSection } from './components/games/HeroSection';
+import { GameCard } from './components/games/GameCard';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
@@ -107,6 +110,11 @@ function App() {
     stars: '5',
     comment: 'Gran experiencia de intercambio.',
   });
+  const [rejectModal, setRejectModal] = useState({
+    open: false,
+    tradeId: null,
+    reason: '',
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [platformFilter, setPlatformFilter] = useState('all');
 
@@ -197,12 +205,16 @@ function App() {
             Authorization: `Bearer ${token}`,
           },
         });
+        // 🔍 DEBUG: log status if not OK
         if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          console.error('[DEBUG] loadTrades — HTTP', response.status, response.url, errData);
           return;
         }
         const data = await response.json();
         setTrades(data);
-      } catch {
+      } catch (error) {
+        console.error('[DEBUG] loadTrades — Full error:', error?.message || error);
         setError('No se pudieron cargar los intercambios.');
       }
     }
@@ -210,34 +222,45 @@ function App() {
     loadTrades();
   }, [token]);
 
-  const loadMessages = useCallback(async () => {
+  useEffect(() => {
     if (!token) {
       setMessages([]);
       return;
     }
 
+    async function fetchMessages() {
+      try {
+        const response = await fetch(`${API_BASE_URL}/messages`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await response.json();
+        // 🔍 DEBUG: log status + full response before throwing
+        if (!response.ok) {
+          console.error('[DEBUG] fetchMessages — HTTP', response.status, response.url, data);
+          throw new Error(data.error || 'Error cargando mensajes');
+        }
+        setMessages(Array.isArray(data) ? data : []);
+      } catch (error) {
+        console.error('[DEBUG] fetchMessages — Full error:', error?.response?.data || error?.message || error);
+        setError('No se pudieron cargar los mensajes.');
+      }
+    }
+
+    fetchMessages();
+  // Se dispara al hacer login/logout (token) y al abrir la sección de mensajes (activeSection)
+  }, [token, activeSection]);
+
+  // Alias estable para poder llamar a loadMessages desde handleMessageSubmit
+  const loadMessages = useCallback(async () => {
+    if (!token) { setMessages([]); return; }
     try {
       const response = await fetch(`${API_BASE_URL}/messages`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { Authorization: `Bearer ${token}` },
       });
-
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudieron cargar los mensajes');
-      }
-
-      setMessages(Array.isArray(data) ? data : []);
-    } catch {
-      setError('No se pudieron cargar los mensajes.');
-    }
+      if (response.ok) setMessages(Array.isArray(data) ? data : []);
+    } catch { /* silencioso */ }
   }, [token]);
-
-  useEffect(() => {
-    loadMessages();
-  }, [loadMessages]);
 
   useEffect(() => {
     async function loadRatings() {
@@ -388,19 +411,19 @@ function App() {
   const currentTradeCount = trades.length;
   const hasSession = Boolean(token);
 
-  // Debugging user and trades data from backend
-  console.log('Current User:', user);
-  console.log('Fetched Trades:', trades);
-
   const currentUserId = user ? (user.id || user.id_user) : null;
   const pendingIncomingTradesCount = trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId && t.status === 'pending').length;
 
+  const { requireAuth, canEditGame, canDeleteGame } = useRBAC(user, token, setStatus, setActiveSection);
+
   const visibleNavItems = useMemo(
-    () => navItems.filter((item) => (token ? item.id !== 'auth' : true)),
+    () => navItems.filter((item) => {
+      if (token && item.id === 'auth') return false;
+      if (!token && item.id === 'profile') return false;
+      return true;
+    }),
     [token]
   );
-  const canEditGame = (game) => Boolean(user && (user.role === 'admin' || game.owner?.id === currentUserId));
-  const canDeleteGame = Boolean(user?.role === 'admin');
 
   function startEditingGame(game) {
     setEditingGameId(game.id);
@@ -456,9 +479,8 @@ function App() {
   }
 
   async function toggleFavorite(gameId) {
-    if (!token) {
-      setActiveSection('auth');
-      setError('Necesitas iniciar sesión para guardar favoritos.');
+    if (!hasSession) {
+      requireAuth(() => {});
       return;
     }
 
@@ -714,19 +736,25 @@ function App() {
     }
   }
 
-  async function updateTradeStatus(tradeId, newStatus) {
+  async function updateTradeStatus(tradeId, newStatus, rejectionReason = '') {
     setLoading(true);
     setError('');
     setStatus('');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/trades/${tradeId}`, {
-        method: 'PATCH',
+      // ── Uses the new semantic PUT /:id/status endpoint ──────────────────
+      const body = { status: newStatus };
+      if (newStatus === 'rejected' && rejectionReason) {
+        body.rejection_reason = rejectionReason;
+      }
+
+      const response = await fetch(`${API_BASE_URL}/trades/${tradeId}/status`, {
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ status: newStatus }),
+        body: JSON.stringify(body),
       });
       const data = await response.json();
 
@@ -734,10 +762,24 @@ function App() {
         throw new Error(data.error || 'No se pudo actualizar el intercambio');
       }
 
-      setTrades((current) =>
-        current.map((t) => (t.id === tradeId ? { ...t, status: newStatus } : t))
-      );
-      setStatus(`Estado de intercambio actualizado a: ${newStatus}`);
+      // ── Re-fetch from Backend to get updated computed fields ────────────
+      // (Never trust optimistic update — Backend is the source of truth)
+      const refreshed = await fetch(`${API_BASE_URL}/trades`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (refreshed.ok) {
+        const refreshedData = await refreshed.json();
+        setTrades(refreshedData);
+      }
+
+      const statusLabels = {
+        accepted: 'Intercambio aceptado ✅',
+        rejected: 'Intercambio rechazado ❌',
+        cancelled: 'Intercambio cancelado',
+        completed: 'Intercambio completado 🎉',
+      };
+      setStatus(statusLabels[newStatus] || `Estado actualizado: ${newStatus}`);
+      setRejectModal({ open: false, tradeId: null, reason: '' });
     } catch (err) {
       setError(err.message || 'Error actualizando intercambio');
     } finally {
@@ -935,9 +977,15 @@ function App() {
           <button
             key={item.id}
             type="button"
-            className={activeSection === item.id ? 'mobile-nav-item active' : 'mobile-nav-item'}
-            onClick={() => setActiveSection(item.id)}
-          >
+              className={activeSection === item.id ? 'mobile-nav-item active' : 'mobile-nav-item'}
+              onClick={() => {
+                if (!hasSession && ['trades', 'messages', 'publish'].includes(item.id)) {
+                  requireAuth(() => {});
+                } else {
+                  setActiveSection(item.id);
+                }
+              }}
+            >
             <span className="mobile-nav-icon">{item.icon}</span>
             <span>{item.label}</span>
           </button>
@@ -1039,9 +1087,7 @@ function App() {
     );
   }
 
-  if (!hasSession) {
-    return renderLanding();
-  }
+  // Guest access is now allowed natively
 
   return (
     <div className="app-shell">
@@ -1059,7 +1105,13 @@ function App() {
             <button
               key={item.id}
               className={`nav-item ${activeSection === item.id ? 'active' : ''}`}
-              onClick={() => setActiveSection(item.id)}
+              onClick={() => {
+                if (!hasSession && ['trades', 'messages', 'publish'].includes(item.id)) {
+                  requireAuth(() => {});
+                } else {
+                  setActiveSection(item.id);
+                }
+              }}
               type="button"
             >
               {item.label}
@@ -1084,7 +1136,7 @@ function App() {
               <div
                 className="notification-bell"
                 style={{ position: 'relative', cursor: 'pointer', fontSize: '1.4rem' }}
-                onClick={() => setActiveSection('messages')}
+                onClick={() => requireAuth(() => setActiveSection('messages'))}
                 title="Notificaciones"
               >
                 🔔
@@ -1124,7 +1176,7 @@ function App() {
             <button
               className="market-button market-button-solid"
               type="button"
-              onClick={() => setActiveSection(token ? 'publish' : 'auth')}
+              onClick={() => requireAuth(() => setActiveSection('publish'))}
             >
               <span className="market-plus">+</span>
               <span>Publicar juego</span>
@@ -1189,86 +1241,13 @@ function App() {
         {error ? <div className="notice error">{error}</div> : null}
 
         {activeSection === 'home' ? (
-          <section className="panel home-splash">
-            <div className="splash-stage">
-              <div className="splash-copy">
-                <span className="eyebrow">Inicio / Splash</span>
-                <h3>Game For All</h3>
-                <p>Intercambia juegos, publica tus títulos y contacta con otros jugadores sin costo.</p>
-
-                <div className="hero-actions">
-                  <button className="primary-button" type="button" onClick={() => setActiveSection('games')}>
-                    Explorar juegos
-                  </button>
-                  <button className="secondary-button" type="button" onClick={() => setActiveSection('auth')}>
-                    Iniciar sesión
-                  </button>
-                </div>
-
-                <div className="splash-mini-stats">
-                  <div>
-                    <strong>{games.length}</strong>
-                    <span>Juegos listados</span>
-                  </div>
-                  <div>
-                    <strong>{currentTradeCount}</strong>
-                    <span>Intercambios</span>
-                  </div>
-                  <div>
-                    <strong>{favorites.length}</strong>
-                    <span>Favoritos</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="splash-visual">
-                <div className="splash-card-art">
-                  <span className="splash-badge">G</span>
-                  <strong>Game Swapp</strong>
-                  <p>Elige, compara y negocia juegos de forma sencilla.</p>
-                </div>
-                <div className="splash-tips">
-                  <article>
-                    <strong>1. Explorar</strong>
-                    <span>Descubre juegos disponibles.</span>
-                  </article>
-                  <article>
-                    <strong>2. Publicar</strong>
-                    <span>Sube tu juego para intercambio.</span>
-                  </article>
-                  <article>
-                    <strong>3. Contactar</strong>
-                    <span>Escribe al propietario o crea un trade.</span>
-                  </article>
-                </div>
-              </div>
-            </div>
-
-            <div className="spotlight-row">
-              {visibleGames.slice(0, 3).map((game) => (
-                <article className="spotlight-card" key={game.id}>
-                  <div className="spotlight-image">
-                    {game.image ? (
-                      <img src={game.image} alt={game.title} />
-                    ) : (
-                      <div className="spotlight-fallback">
-                        <span className="fallback-badge">PS</span>
-                        <strong>{game.title}</strong>
-                        <span>{game.platform}</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="spotlight-body">
-                    <div className="spotlight-topline">
-                      <strong>{game.title}</strong>
-                      <span>{game.platform}</span>
-                    </div>
-                    <p>{game.genre}</p>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
+          <HeroSection 
+            user={user}
+            token={token}
+            gamesCount={games.length}
+            activeTradesCount={currentTradeCount}
+            setActiveSection={setActiveSection}
+          />
         ) : null}
 
         {activeSection === 'games' ? (
@@ -1389,69 +1368,28 @@ function App() {
               </form>
             ) : null}
 
-            <div className="explore-list">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 p-6">
               {visibleGames.map((game) => (
-                <article className="game-row" key={game.id} onClick={() => openGameDetail(game.id)}>
-                  <div className="game-image">
-                    {game.image ? (
-                      <img src={game.image} alt={game.title} />
-                    ) : (
-                      <div className="game-fallback">
-                        <span className="fallback-badge">PS</span>
-                        <strong>{game.title}</strong>
-                        <span>{game.platform}</span>
-                      </div>
-                    )}
-                  </div>
-                  <div className="game-body">
-                    <div className="game-topline">
-                      <div className="game-title-block">
-                        <strong>{game.title}</strong>
-                        <span>{game.platform}</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          toggleFavorite(game.id);
-                        }}
-                      >
-                        {favorites.includes(game.id) ? 'Quitar favorito' : 'Favorito'}
-                      </button>
-                    </div>
-                    <p>{game.description || 'Juego disponible para intercambio.'}</p>
-                    <div className="chips">
-                      <span>{game.genre}</span>
-                      <span>{game.condition || 'Good'}</span>
-                    </div>
-                    {canEditGame(game) || canDeleteGame ? (
-                      <div className="game-actions">
-                        {canEditGame(game) ? (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              startEditingGame(game);
-                            }}
-                          >
-                            Editar
-                          </button>
-                        ) : null}
-                        {canDeleteGame ? (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              handleGameDelete(game.id);
-                            }}
-                          >
-                            Eliminar
-                          </button>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </article>
+                <GameCard 
+                  key={game.id}
+                  game={game}
+                  favorites={favorites}
+                  toggleFavorite={toggleFavorite}
+                  onTradeClick={() => requireAuth(() => {
+                    setSelectedGameId(game.id);
+                    setTradeForm(f => ({ ...f, requestedGameId: String(game.id) }));
+                    setActiveSection('trades');
+                  })}
+                  onMessageClick={() => requireAuth(() => {
+                    setMessageForm(f => ({ ...f, receiverId: String(game.owner?.id || '') }));
+                    setActiveSection('messages');
+                  })}
+                  canEditGame={canEditGame}
+                  canDeleteGame={canDeleteGame}
+                  onEditClick={startEditingGame}
+                  onDeleteClick={handleGameDelete}
+                  onImageClick={() => openGameDetail(game.id)}
+                />
               ))}
             </div>
           </section>
@@ -1628,11 +1566,62 @@ function App() {
             <div className="section-header">
               <div>
                 <span className="eyebrow">Intercambios</span>
-                <h3>Solicitudes activas</h3>
+                <h3>Mis Solicitudes de Intercambio</h3>
               </div>
+              <p>Gestiona tus ofertas y solicitudes recibidas.</p>
             </div>
 
+            {/* ── Rejection reason modal ─────────────────────────────────── */}
+            {rejectModal.open && (
+              <div style={{
+                position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                zIndex: 9999,
+              }}>
+                <div style={{
+                  background: '#1f1f2e', borderRadius: '16px', padding: '2rem',
+                  width: '100%', maxWidth: '440px', border: '1px solid rgba(255,255,255,0.1)',
+                }}>
+                  <h4 style={{ color: '#fff', marginBottom: '1rem' }}>❌ Motivo del rechazo</h4>
+                  <textarea
+                    rows="4"
+                    placeholder="Escribe el motivo del rechazo (opcional)..."
+                    value={rejectModal.reason}
+                    onChange={(e) => setRejectModal((m) => ({ ...m, reason: e.target.value }))}
+                    style={{
+                      width: '100%', padding: '10px', borderRadius: '8px',
+                      background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.15)',
+                      color: '#fff', marginBottom: '1.2rem', resize: 'vertical',
+                    }}
+                  />
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => setRejectModal({ open: false, tradeId: null, reason: '' })}
+                      style={{ padding: '8px 18px', borderRadius: '8px', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', cursor: 'pointer' }}
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={() => updateTradeStatus(rejectModal.tradeId, 'rejected', rejectModal.reason)}
+                      disabled={loading}
+                      style={{ padding: '8px 18px', borderRadius: '8px', background: '#dc3545', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold' }}
+                    >
+                      {loading ? 'Rechazando...' : 'Confirmar rechazo'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Create new trade form ──────────────────────────────────── */}
             <form className="form-card" onSubmit={handleTradeSubmit}>
+              <div className="section-header">
+                <div>
+                  <span className="eyebrow">Nueva solicitud</span>
+                  <h3>Proponer un intercambio</h3>
+                </div>
+              </div>
+
               <label>
                 Juego ofrecido
                 <select
@@ -1668,7 +1657,7 @@ function App() {
               <label>
                 Mensaje
                 <textarea
-                  rows="4"
+                  rows="3"
                   value={tradeForm.message}
                   onChange={(event) =>
                     setTradeForm((current) => ({ ...current, message: event.target.value }))
@@ -1677,101 +1666,154 @@ function App() {
               </label>
 
               <button className="primary-button" type="submit" disabled={loading || !token}>
-                {loading ? 'Procesando...' : 'Enviar intercambio'}
+                {loading ? 'Procesando...' : 'Enviar solicitud'}
               </button>
               {!token ? <p className="hint">Necesitas iniciar sesión para crear un intercambio.</p> : null}
             </form>
 
-            <div className="trades-split" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
-              <div className="incoming-trades" style={{ flex: '1 1 45%' }}>
-                <h4 style={{ marginBottom: '1rem', color: '#333' }}>📥 Solicitudes Recibidas (Incoming)</h4>
-                <div className="list-stack">
-                  {trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId).length === 0 ? (
-                    <p className="hint">No tienes solicitudes de intercambio recibidas.</p>
-                  ) : trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId).map((trade) => (
-                    <article className="list-item" key={trade.id}>
-                      <div>
-                        <strong>Trade #{trade.id}</strong>
-                        <p>
-                          Estado:{' '}
-                          <span className={`status-badge status-${trade.status}`} style={{ fontWeight: 'bold', textTransform: 'uppercase', fontSize: '0.85em', padding: '2px 6px', borderRadius: '4px', backgroundColor: trade.status === 'pending' ? '#fff3cd' : trade.status === 'accepted' ? '#d4edda' : trade.status === 'completed' ? '#cce5ff' : '#f8d7da', color: trade.status === 'pending' ? '#856404' : trade.status === 'accepted' ? '#155724' : trade.status === 'completed' ? '#004085' : '#721c24' }}>
-                            {trade.status}
-                          </span>
-                        </p>
-                        <p>{trade.message}</p>
+            {/* ── Inbox: Backend-Driven Authorization UI ────────────────── */}
+            <div className="trades-split" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap', marginTop: '2rem' }}>
 
-                        <div className="trade-actions" style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
-                          {trade.status === 'pending' && (
-                            <>
-                              <button
-                                style={{ backgroundColor: '#28a745', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                                onClick={() => updateTradeStatus(trade.id, 'accepted')}
-                                disabled={loading}
-                              >
-                                Accept
-                              </button>
-                              <button
-                                style={{ backgroundColor: '#dc3545', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                                onClick={() => updateTradeStatus(trade.id, 'rejected')}
-                                disabled={loading}
-                              >
-                                Reject
-                              </button>
-                            </>
-                          )}
-                          {trade.status === 'accepted' && (
-                            <button
-                              style={{ backgroundColor: '#007bff', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                              onClick={() => updateTradeStatus(trade.id, 'completed')}
-                              disabled={loading}
-                            >
-                              Complete Trade
-                            </button>
-                          )}
+              {/* ── INCOMING ────────────────────── */}
+              <div style={{ flex: '1 1 45%' }}>
+                <h4 style={{ marginBottom: '1rem', color: '#a78bfa' }}>📥 Solicitudes Recibidas</h4>
+                <div className="list-stack">
+                  {trades.filter(t => t.is_receiver).length === 0 ? (
+                    <p className="hint">No tienes solicitudes de intercambio recibidas.</p>
+                  ) : trades.filter(t => t.is_receiver).map((trade) => (
+                    <article className="list-item" key={trade.id} style={{
+                      borderLeft: `4px solid ${
+                        trade.status === 'pending'  ? '#ffc107' :
+                        trade.status === 'accepted' ? '#28a745' :
+                        trade.status === 'rejected' ? '#dc3545' : '#6c757d'
+                      }`,
+                    }}>
+                      <div style={{ marginBottom: '8px' }}>
+                        <strong style={{ color: '#fff' }}>#{trade.id} — {trade.requester?.username}</strong>
+                        <span style={{
+                          marginLeft: '12px', fontSize: '0.8em', fontWeight: 'bold',
+                          textTransform: 'uppercase', padding: '2px 8px', borderRadius: '4px',
+                          background: trade.status === 'pending' ? '#ffc10722' : trade.status === 'accepted' ? '#28a74522' : '#dc354522',
+                          color: trade.status === 'pending' ? '#ffc107' : trade.status === 'accepted' ? '#28a745' : '#dc3545',
+                        }}>
+                          {trade.status === 'pending'  ? '⏳ Pendiente' :
+                           trade.status === 'accepted' ? '✅ Aceptado' :
+                           trade.status === 'rejected' ? '❌ Rechazado' : trade.status}
+                        </span>
+                      </div>
+
+                      <div className="mini-meta" style={{ marginBottom: '10px' }}>
+                        <span>Ofrece: <strong>{trade.offeredGame?.title}</strong></span>
+                        <span>Solicita: <strong>{trade.requestedGame?.title}</strong></span>
+                      </div>
+
+                      {trade.message ? (
+                        <p style={{ color: '#ccc', fontSize: '0.9em', marginBottom: '10px', fontStyle: 'italic' }}>
+                          "{trade.message}"
+                        </p>
+                      ) : null}
+
+                      {trade.can_take_action ? (
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          <button
+                            onClick={() => updateTradeStatus(trade.id, 'accepted')}
+                            disabled={loading}
+                            style={{ background: '#28a745', color: '#fff', padding: '7px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+                          >
+                            ✅ Aceptar
+                          </button>
+                          <button
+                            onClick={() => setRejectModal({ open: true, tradeId: trade.id, reason: '' })}
+                            disabled={loading}
+                            style={{ background: '#dc3545', color: '#fff', padding: '7px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+                          >
+                            ❌ Rechazar
+                          </button>
                         </div>
-                      </div>
-                      <div className="mini-meta">
-                        <span>Offered: {trade.offeredGame?.title || trade.offeredGameId}</span>
-                        <span>Requested: {trade.requestedGame?.title || trade.requestedGameId}</span>
-                      </div>
+                      ) : trade.status === 'accepted' ? (
+                        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                          <button
+                            onClick={() => updateTradeStatus(trade.id, 'completed')}
+                            disabled={loading}
+                            style={{ background: '#007bff', color: '#fff', padding: '7px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
+                          >
+                            🎉 Marcar como completado
+                          </button>
+                          <button
+                            onClick={() => {
+                              setMessageForm((f) => ({ ...f, receiverId: String(trade.requester?.id || '') }));
+                              setActiveSection('messages');
+                            }}
+                            style={{ background: '#6c5ce7', color: '#fff', padding: '7px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}
+                          >
+                            💬 Enviar mensaje
+                          </button>
+                        </div>
+                      ) : null}
                     </article>
                   ))}
                 </div>
               </div>
 
-              <div className="outgoing-trades" style={{ flex: '1 1 45%' }}>
-                <h4 style={{ marginBottom: '1rem', color: '#333' }}>📤 Solicitudes Enviadas (Outgoing)</h4>
+              {/* ── OUTGOING ───────────────────── */}
+              <div style={{ flex: '1 1 45%' }}>
+                <h4 style={{ marginBottom: '1rem', color: '#60a5fa' }}>📤 Solicitudes Enviadas</h4>
                 <div className="list-stack">
-                  {trades.filter(t => (t.requesterId || t.id_sender) === currentUserId).length === 0 ? (
+                  {trades.filter(t => !t.is_receiver).length === 0 ? (
                     <p className="hint">No has enviado ninguna solicitud de intercambio.</p>
-                  ) : trades.filter(t => (t.requesterId || t.id_sender) === currentUserId).map((trade) => (
-                    <article className="list-item" key={trade.id}>
-                      <div>
-                        <strong>Trade #{trade.id}</strong>
-                        <p>
-                          Estado:{' '}
-                          <span className={`status-badge status-${trade.status}`} style={{ fontWeight: 'bold', textTransform: 'uppercase', fontSize: '0.85em', padding: '2px 6px', borderRadius: '4px', backgroundColor: trade.status === 'pending' ? '#fff3cd' : trade.status === 'accepted' ? '#d4edda' : trade.status === 'completed' ? '#cce5ff' : '#f8d7da', color: trade.status === 'pending' ? '#856404' : trade.status === 'accepted' ? '#155724' : trade.status === 'completed' ? '#004085' : '#721c24' }}>
-                            {trade.status}
-                          </span>
-                        </p>
-                        <p>{trade.message}</p>
+                  ) : trades.filter(t => !t.is_receiver).map((trade) => (
+                    <article className="list-item" key={trade.id} style={{
+                      borderLeft: `4px solid ${
+                        trade.status === 'pending'  ? '#ffc107' :
+                        trade.status === 'accepted' ? '#28a745' :
+                        trade.status === 'rejected' ? '#dc3545' : '#6c757d'
+                      }`,
+                    }}>
+                      <div style={{ marginBottom: '8px' }}>
+                        <strong style={{ color: '#fff' }}>#{trade.id} — Para: {trade.owner?.username}</strong>
+                        <span style={{
+                          marginLeft: '12px', fontSize: '0.8em', fontWeight: 'bold',
+                          textTransform: 'uppercase', padding: '2px 8px', borderRadius: '4px',
+                          background: trade.status === 'pending' ? '#ffc10722' : trade.status === 'accepted' ? '#28a74522' : '#dc354522',
+                          color: trade.status === 'pending' ? '#ffc107' : trade.status === 'accepted' ? '#28a745' : '#dc3545',
+                        }}>
+                          {trade.status === 'pending'  ? '⏳ Pendiente' :
+                           trade.status === 'accepted' ? '✅ Aceptado' :
+                           trade.status === 'rejected' ? '❌ Rechazado' : trade.status}
+                        </span>
+                      </div>
 
-                        <div className="trade-actions" style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
-                          {trade.status === 'pending' && (
-                            <button
-                              style={{ backgroundColor: '#6c757d', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                              onClick={() => updateTradeStatus(trade.id, 'cancelled')}
-                              disabled={loading}
-                            >
-                              Cancel Trade
-                            </button>
-                          )}
-                        </div>
+                      <div className="mini-meta" style={{ marginBottom: '10px' }}>
+                        <span>Ofreces: <strong>{trade.offeredGame?.title}</strong></span>
+                        <span>Quieres: <strong>{trade.requestedGame?.title}</strong></span>
                       </div>
-                      <div className="mini-meta">
-                        <span>Offered: {trade.offeredGame?.title || trade.offeredGameId}</span>
-                        <span>Requested: {trade.requestedGame?.title || trade.requestedGameId}</span>
-                      </div>
+
+                      {trade.message ? (
+                        <p style={{ color: '#ccc', fontSize: '0.9em', marginBottom: '10px', fontStyle: 'italic' }}>
+                          "{trade.message}"
+                        </p>
+                      ) : null}
+
+                      {/* Sender can only cancel a pending trade */}
+                      {trade.status === 'pending' ? (
+                        <button
+                          onClick={() => updateTradeStatus(trade.id, 'cancelled')}
+                          disabled={loading}
+                          style={{ background: '#6c757d', color: '#fff', padding: '7px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}
+                        >
+                          Cancelar solicitud
+                        </button>
+                      ) : trade.status === 'accepted' ? (
+                        <button
+                          onClick={() => {
+                            setMessageForm((f) => ({ ...f, receiverId: String(trade.owner?.id || '') }));
+                            setActiveSection('messages');
+                          }}
+                          style={{ background: '#6c5ce7', color: '#fff', padding: '7px 16px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}
+                        >
+                          💬 Enviar mensaje al propietario
+                        </button>
+                      ) : null}
                     </article>
                   ))}
                 </div>
@@ -2117,3 +2159,71 @@ function App() {
 }
 
 export default App;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔧 DEBUG TOOL: debugCreateTrade()
+// Paste in browser Console to verify the full Backend-Driven trades flow.
+// Tests: POST create → GET with computed fields → confirms is_receiver accuracy.
+// ─────────────────────────────────────────────────────────────────────────────
+window.debugCreateTrade = async function (offeredGameId = 1, requestedGameId = 2) {
+  const TOKEN = localStorage.getItem('gameForAllToken');
+  const API = 'http://localhost:5000/api';
+
+  if (!TOKEN) {
+    console.error('❌ No token found. Please log in first.');
+    return;
+  }
+
+  console.group('🔧 debugCreateTrade()');
+  console.log('Token:', TOKEN.substring(0, 25) + '...');
+
+  // Step 1: POST — create trade
+  console.log('\n📤 Step 1: Creating trade...', { offeredGameId, requestedGameId });
+  let tradeId;
+  try {
+    const res = await fetch(`${API}/trades`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({ offeredGameId, requestedGameId, message: '[DEBUG] Test trade' }),
+    });
+    const data = await res.json();
+    if (!res.ok) { console.error('❌ POST failed:', res.status, data); console.groupEnd(); return; }
+    tradeId = data.id;
+    console.log('✅ Trade created! id:', tradeId);
+    console.log('   is_receiver:', data.is_receiver, '| can_take_action:', data.can_take_action);
+    console.log('   Full payload:', data);
+  } catch (e) { console.error('❌ Network error:', e); console.groupEnd(); return; }
+
+  // Step 2: GET — verify computed fields
+  console.log('\n📥 Step 2: Fetching trades to verify computed fields...');
+  try {
+    const res = await fetch(`${API}/trades`, {
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    const trades = await res.json();
+    if (!res.ok) { console.error('❌ GET failed:', res.status, trades); console.groupEnd(); return; }
+
+    const created = trades.find(t => t.id === tradeId);
+    if (created) {
+      console.log('✅ Trade found in GET response:');
+      console.table({
+        id: created.id, status: created.status,
+        is_receiver: created.is_receiver, can_take_action: created.can_take_action,
+        requester: created.requester?.username, owner: created.owner?.username,
+      });
+
+      if (created.is_receiver === false && created.can_take_action === false) {
+        console.log('\n🎯 RESULT: Backend-Driven Auth working correctly.');
+        console.log('   → Sender sees is_receiver: false, can_take_action: false ✅');
+        console.log('   → Login as the trade owner to see is_receiver: true, can_take_action: true');
+      }
+    } else {
+      console.warn('⚠️ Created trade not found in GET response. Check filters.');
+    }
+  } catch (e) { console.error('❌ Network error:', e); }
+
+  console.groupEnd();
+};
+
+console.log('🔧 Debug tool loaded. Run: debugCreateTrade() in the console.');
+

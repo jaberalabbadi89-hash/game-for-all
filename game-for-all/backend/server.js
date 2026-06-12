@@ -3,7 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const dotenv = require('dotenv');
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const authRoutes = require('./routes/auth.routes');
 const gameRoutes = require('./routes/games.routes');
@@ -75,6 +75,9 @@ async function startServer() {
   app.listen(PORT, () => {
     console.log(`Game For All API running on http://localhost:${PORT}`);
   });
+
+  // Forzar reinicio de nodemon para leer el .env actualizado
+  // Reinicio número 2
 }
 
 startServer();

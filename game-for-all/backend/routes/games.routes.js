@@ -15,6 +15,6 @@ router.get('/', getGames);
 router.get('/:id', getGameById);
 router.post('/', authMiddleware, createGame);
 router.patch('/:id', authMiddleware, updateGame);
-router.delete('/:id', authMiddleware, adminMiddleware, deleteGame);
+router.delete('/:id', authMiddleware, deleteGame);
 
 module.exports = router;

@@ -313,6 +313,14 @@ async function deleteGame(req, res, next) {
       return res.status(404).json({ error: 'Game not found' });
     }
 
+    const existingGame = rows[0];
+    const canDelete =
+      req.user.role === 'admin' || Number(existingGame.id_owner) === Number(req.user.id);
+
+    if (!canDelete) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
     await query('DELETE FROM Games WHERE id_game = ?', [gameId]);
 
     return res.json({

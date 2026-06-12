@@ -2,9 +2,13 @@ const { query } = require('../config/db');
 const { sanitizeUser } = require('../utils/formatters');
 
 async function getMessages(req, res, next) {
+  console.log('1. Hit GET /api/messages');
   try {
+    console.log('2. Current User:', req.user);
+
     // Always use the authenticated user from JWT.
     const authenticatedUserId = req.user.id;
+    console.log('3. SQL Query Executed — searching messages for userId:', authenticatedUserId);
 
     const rows = await query(
       `
@@ -32,6 +36,7 @@ async function getMessages(req, res, next) {
       `,
       [authenticatedUserId, authenticatedUserId]
     );
+    console.log('4. Rows returned from DB:', rows.length);
 
     const messages = rows.map((row) => ({
       id: row.id_message,
@@ -59,7 +64,8 @@ async function getMessages(req, res, next) {
 
     return res.json(messages);
   } catch (error) {
-    return next(error);
+    console.error('[DEBUG] getMessages ERROR:', error.message, '\nStack:', error.stack);
+    return res.status(500).json({ error: error.message, stack: error.stack });
   }
 }
 
