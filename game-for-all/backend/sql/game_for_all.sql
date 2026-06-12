@@ -1,182 +1,196 @@
-DROP DATABASE IF EXISTS game_for_all;
-CREATE DATABASE game_for_all CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE game_for_all;
+use game_for_all;
 
-DROP TABLE IF EXISTS Messages;
-DROP TABLE IF EXISTS Ratings;
-DROP TABLE IF EXISTS Favorites;
-DROP TABLE IF EXISTS Trades;
-DROP TABLE IF EXISTS Games;
-DROP TABLE IF EXISTS Users;
 
-CREATE TABLE Users (
-  id_user INT AUTO_INCREMENT PRIMARY KEY,
-  username VARCHAR(50) NOT NULL UNIQUE,
-  email VARCHAR(120) NOT NULL UNIQUE,
-  password VARCHAR(255) NOT NULL,
-  avatar VARCHAR(255) DEFAULT NULL,
-  role ENUM('user', 'admin') NOT NULL DEFAULT 'user',
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+drop table if exists messages;
+drop table if exists ratings;
+drop table if exists favorites;
+drop table if exists trades;
+drop table if exists games;
+drop table if exists users;
+
+
+create table Users (
+ id_user int auto_increment primary key,
+ username varchar(50) not null unique,
+ email varchar(120) not null unique,
+ password varchar(255) not null,
+ avatar varchar(255) default null,
+ role enum('user', 'admin') not null default 'user',
+ created_at timestamp not null default current_timestamp
 );
 
-CREATE TABLE Games (
-  id_game INT AUTO_INCREMENT PRIMARY KEY,
-  title VARCHAR(120) NOT NULL,
-  description TEXT,
-  platform VARCHAR(80) NOT NULL,
-  genre VARCHAR(80) DEFAULT NULL,
-  state ENUM('new', 'like_new', 'used') NOT NULL DEFAULT 'used',
-  image VARCHAR(255) DEFAULT NULL,
-  id_owner INT NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_games_owner
-    FOREIGN KEY (id_owner) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE
+
+create table Games (
+ id_game int auto_increment primary key,
+ title varchar(120) not null,
+ description text,
+ platform varchar(80) not null,
+ genre varchar(80) default null,
+ state enum('new', 'like_new', 'used') not null default 'used',
+ image varchar(255) default null,
+ id_owner int not null,
+ created_at timestamp not null default current_timestamp,
+ constraint fk_games_owner
+   foreign key (id_owner) references Users (id_user)
+   on delete cascade
+   on update cascade
 );
 
-CREATE TABLE Favorites (
-  id_user INT NOT NULL,
-  id_game INT NOT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (id_user, id_game),
-  CONSTRAINT fk_favorites_user
-    FOREIGN KEY (id_user) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE,
-  CONSTRAINT fk_favorites_game
-    FOREIGN KEY (id_game) REFERENCES Games (id_game)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE
+
+create table Favorites (
+ id_user int not null,
+ id_game int not null,
+ created_at timestamp not null default current_timestamp,
+ primary key (id_user, id_game),
+ constraint fk_favorites_user
+   foreign key (id_user) references Users (id_user)
+   on delete cascade
+   on update cascade,
+ constraint fk_favorites_game
+   foreign key (id_game) references Games (id_game)
+   on delete cascade
+   on update cascade
 );
 
-CREATE TABLE Ratings (
-  id_rating INT AUTO_INCREMENT PRIMARY KEY,
-  id_voter INT NOT NULL,
-  id_reviewed INT NOT NULL,
-  stars TINYINT NOT NULL,
-  comment TEXT DEFAULT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT chk_ratings_stars CHECK (stars BETWEEN 1 AND 5),
-  UNIQUE KEY uq_rating_pair (id_voter, id_reviewed),
-  CONSTRAINT fk_ratings_voter
-    FOREIGN KEY (id_voter) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE,
-  CONSTRAINT fk_ratings_reviewed
-    FOREIGN KEY (id_reviewed) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE
+
+create table Ratings (
+ id_rating int auto_increment primary key,
+ id_voter int not null,
+ id_reviewed int not null,
+ stars tinyint not null,
+ comment text default null,
+ created_at timestamp not null default current_timestamp,
+ constraint chk_ratings_stars check (stars between 1 and 5),
+ unique key uq_rating_pair (id_voter, id_reviewed),
+ constraint fk_ratings_voter1
+   foreign key (id_voter) references Users (id_user)
+   on delete cascade
+   on update cascade,
+ constraint fk_ratings_reviewed1
+   foreign key (id_reviewed) references Users (id_user)
+   on delete cascade
+   on update cascade
 );
 
-CREATE TABLE Trades (
-  id_trade INT AUTO_INCREMENT PRIMARY KEY,
-  id_sender INT NOT NULL,
-  id_receiver INT NOT NULL,
-  id_game_offered INT NOT NULL,
-  id_game_requested INT NOT NULL,
-  status ENUM('pending', 'accepted', 'rejected', 'cancelled') NOT NULL DEFAULT 'pending',
-  message TEXT DEFAULT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_trades_sender
-    FOREIGN KEY (id_sender) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE,
-  CONSTRAINT fk_trades_receiver
-    FOREIGN KEY (id_receiver) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE,
-  CONSTRAINT fk_trades_offered
-    FOREIGN KEY (id_game_offered) REFERENCES Games (id_game)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE,
-  CONSTRAINT fk_trades_requested
-    FOREIGN KEY (id_game_requested) REFERENCES Games (id_game)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE
+
+create table Trades (
+ id_trade int auto_increment primary key,
+ id_sender int not null,
+ id_receiver int not null,
+ id_game_offered int not null,
+ id_game_requested int not null,
+ status enum('pending', 'accepted', 'rejected', 'completed', 'cancelled') not null default 'pending',
+ message text default null,
+ created_at timestamp not null default current_timestamp,
+ constraint fk_trades_sender1
+   foreign key (id_sender) references Users (id_user)
+   on delete cascade
+   on update cascade,
+ constraint fk_trades_receiver1
+   foreign key (id_receiver) references Users (id_user)
+   on delete cascade
+   on update cascade,
+ constraint fk_trades_offered1
+   foreign key (id_game_offered) references Games (id_game)
+   on delete cascade
+   on update cascade,
+ constraint fk_trades_requested1
+   foreign key (id_game_requested) references Games (id_game)
+   on delete cascade
+   on update cascade
 );
 
-CREATE TABLE Messages (
-  id_message INT AUTO_INCREMENT PRIMARY KEY,
-  sender_id INT NOT NULL,
-  receiver_id INT NOT NULL,
-  message_text TEXT NOT NULL,
-  sent_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_messages_sender
-    FOREIGN KEY (sender_id) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE,
-  CONSTRAINT fk_messages_receiver
-    FOREIGN KEY (receiver_id) REFERENCES Users (id_user)
-    ON DELETE CASCADE
-    ON UPDATE CASCADE
+
+create table Messages (
+ id_message int auto_increment primary key,
+ sender_id int not null,
+ receiver_id int not null,
+ message_text text not null,
+ sent_at timestamp not null default current_timestamp,
+ constraint fk_messages_sender1
+   foreign key (sender_id) references Users (id_user)
+   on delete cascade
+   on update cascade,
+ constraint fk_messages_receiver1
+   foreign key (receiver_id) references Users (id_user)
+   on delete cascade
+   on update cascade
 );
 
-INSERT INTO Users (username, email, password, avatar, role) VALUES
+
+insert into Users (username, email, password, avatar, role) values
 (
-  'admin',
-  'admin@gameforall.com',
-  '$2b$10$XpNa56jHxOwATCgxCzuggO2nJp3EKiE15AMlG08m.HBjFRggEa7xW',
-  'https://i.pravatar.cc/150?img=12',
-  'admin'
+ 'admin',
+ 'admin@gameforall.com',
+ '$2b$10$XpNa56jHxOwATCgxCzuggO2nJp3EKiE15AMlG08m.HBjFRggEa7xW',
+ 'https://i.pravatar.cc/150?img=12',
+ 'admin'
 ),
 (
-  'playerOne',
-  'player1@gameforall.com',
-  '$2b$10$prRg9OGnTdGl2AC9hI7BA.F.orrnjhytMYM1xzgbENddpRhum0BRC',
-  'https://i.pravatar.cc/150?img=32',
-  'user'
+ 'playerOne',
+ 'player1@gameforall.com',
+ '$2b$10$prRg9OGnTdGl2AC9hI7BA.F.orrnjhytMYM1xzgbENddpRhum0BRC',
+ 'https://i.pravatar.cc/150?img=32',
+ 'user'
 ),
 (
-  'playerTwo',
-  'player2@gameforall.com',
-  '$2b$10$koZyeJrVuGN21Sdhu2X8aeLmHkYXh1gB6WQfFsWnN4QhKZxQg57Ti',
-  'https://i.pravatar.cc/150?img=44',
-  'user'
+ 'playerTwo',
+ 'player2@gameforall.com',
+ '$2b$10$koZyeJrVuGN21Sdhu2X8aeLmHkYXh1gB6WQfFsWnN4QhKZxQg57Ti',
+ 'https://i.pravatar.cc/150?img=44',
+ 'user'
 );
 
-INSERT INTO Games (title, description, platform, genre, state, image, id_owner) VALUES
+
+insert into Games (title, description, platform, genre, state, image, id_owner) values
 (
-  'God of War Ragnarök',
-  'Adventure game available for trade.',
-  'PS5',
-  'Action',
-  'like_new',
-  'https://picsum.photos/seed/gow/800/500',
-  2
+ 'God of War Ragnarök',
+ 'Adventure game available for trade.',
+ 'PS5',
+ 'Action',
+ 'like_new',
+ 'https://picsum.photos/seed/gow/800/500',
+ 2
 ),
 (
-  'The Legend of Zelda: Tears of the Kingdom',
-  'Popular open-world game for exchange.',
-  'Nintendo Switch',
-  'Adventure',
-  'used',
-  'https://picsum.photos/seed/zelda/800/500',
-  1
+ 'The Legend of Zelda: Tears of the Kingdom',
+ 'Popular open-world game for exchange.',
+ 'Nintendo Switch',
+ 'Adventure',
+ 'used',
+ 'https://picsum.photos/seed/zelda/800/500',
+ 1
 ),
 (
-  'Elden Ring',
-  'Fantasy action RPG ready for exchange.',
-  'PS5',
-  'RPG',
-  'new',
-  'https://picsum.photos/seed/eldenring/800/500',
-  3
+ 'Elden Ring',
+ 'Fantasy action RPG ready for exchange.',
+ 'PS5',
+ 'RPG',
+ 'new',
+ 'https://picsum.photos/seed/eldenring/800/500',
+ 3
 );
 
-INSERT INTO Favorites (id_user, id_game) VALUES
+
+insert into Favorites (id_user, id_game) values
 (1, 2),
 (2, 1),
 (2, 3);
 
-INSERT INTO Ratings (id_voter, id_reviewed, stars, comment) VALUES
+
+insert into Ratings (id_voter, id_reviewed, stars, comment) values
 (2, 1, 5, 'Great trade partner.'),
 (1, 2, 4, 'Fast and friendly.');
 
-INSERT INTO Trades (id_sender, id_receiver, id_game_offered, id_game_requested, status, message) VALUES
+
+insert into Trades (id_sender, id_receiver, id_game_offered, id_game_requested, status, message) values
 (2, 1, 1, 2, 'pending', 'I can trade my PS5 copy for your Switch game.');
 
-INSERT INTO Messages (sender_id, receiver_id, message_text) VALUES
+
+insert into Messages (sender_id, receiver_id, message_text) values
 (2, 1, 'Hi, are you still interested in a trade?');
 
-UPDATE Users SET password = '$2b$10$H8ZIxjJ4ry97UqJfX6xwD.jqy4LqAXt2AJrv/wwRX.aUN1nKEA.z6' WHERE email = 'admin@gameforall.com';
+
+update Users set password = '$2b$10$H8ZIxjJ4ry97UqJfX6xwD.jqy4LqAXt2AJrv/wwRX.aUN1nKEA.z6' where email = 'admin@gameforall.com';
+
+

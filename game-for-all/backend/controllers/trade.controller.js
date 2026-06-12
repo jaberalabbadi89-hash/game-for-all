@@ -182,7 +182,11 @@ async function updateTrade(req, res, next) {
       return res.status(403).json({ error: 'Forbidden' });
     }
 
-    const allowedStatuses = ['pending', 'accepted', 'rejected', 'cancelled'];
+    if (trade.status === 'completed' || trade.status === 'cancelled') {
+      return res.status(400).json({ error: 'Cannot update a completed or cancelled trade' });
+    }
+
+    const allowedStatuses = ['pending', 'accepted', 'rejected', 'completed', 'cancelled'];
     if (status && !allowedStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid status' });
     }

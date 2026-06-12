@@ -387,11 +387,19 @@ function App() {
 
   const currentTradeCount = trades.length;
   const hasSession = Boolean(token);
+
+  // Debugging user and trades data from backend
+  console.log('Current User:', user);
+  console.log('Fetched Trades:', trades);
+
+  const currentUserId = user ? (user.id || user.id_user) : null;
+  const pendingIncomingTradesCount = trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId && t.status === 'pending').length;
+
   const visibleNavItems = useMemo(
     () => navItems.filter((item) => (token ? item.id !== 'auth' : true)),
     [token]
   );
-  const canEditGame = (game) => Boolean(user && (user.role === 'admin' || game.owner?.id === user.id));
+  const canEditGame = (game) => Boolean(user && (user.role === 'admin' || game.owner?.id === currentUserId));
   const canDeleteGame = Boolean(user?.role === 'admin');
 
   function startEditingGame(game) {
@@ -637,14 +645,14 @@ function App() {
     const payload =
       authMode === 'login'
         ? {
-            email: authForm.email,
-            password: authForm.password,
-          }
+          email: authForm.email,
+          password: authForm.password,
+        }
         : {
-            username: authForm.username,
-            email: authForm.email,
-            password: authForm.password,
-          };
+          username: authForm.username,
+          email: authForm.email,
+          password: authForm.password,
+        };
 
     try {
       const response = await fetch(`${API_BASE_URL}/auth/${endpoint}`, {
@@ -701,6 +709,37 @@ function App() {
       setActiveSection('trades');
     } catch (err) {
       setError(err.message || 'Error creando intercambio');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function updateTradeStatus(tradeId, newStatus) {
+    setLoading(true);
+    setError('');
+    setStatus('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/trades/${tradeId}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'No se pudo actualizar el intercambio');
+      }
+
+      setTrades((current) =>
+        current.map((t) => (t.id === tradeId ? { ...t, status: newStatus } : t))
+      );
+      setStatus(`Estado de intercambio actualizado a: ${newStatus}`);
+    } catch (err) {
+      setError(err.message || 'Error actualizando intercambio');
     } finally {
       setLoading(false);
     }
@@ -1040,15 +1079,32 @@ function App() {
             </div>
           </div>
 
-          <label className="market-search market-search-dark">
-            <span className="market-search-icon">⌕</span>
-            <input
-              type="search"
-              placeholder="Buscar juegos"
-              value={searchQuery}
-              onChange={(event) => setSearchQuery(event.target.value)}
-            />
-          </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+            {hasSession && (
+              <div
+                className="notification-bell"
+                style={{ position: 'relative', cursor: 'pointer', fontSize: '1.4rem' }}
+                onClick={() => setActiveSection('messages')}
+                title="Notificaciones"
+              >
+                🔔
+                {pendingIncomingTradesCount > 0 && (
+                  <span style={{ position: 'absolute', top: '-6px', right: '-8px', backgroundColor: '#dc3545', color: 'white', borderRadius: '50%', padding: '2px 6px', fontSize: '0.75rem', fontWeight: 'bold' }}>
+                    {pendingIncomingTradesCount}
+                  </span>
+                )}
+              </div>
+            )}
+            <label className="market-search market-search-dark" style={{ margin: 0 }}>
+              <span className="market-search-icon">⌕</span>
+              <input
+                type="search"
+                placeholder="Buscar juegos"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+              />
+            </label>
+          </div>
 
           <div className="market-actions">
             {!token ? (
@@ -1626,22 +1682,100 @@ function App() {
               {!token ? <p className="hint">Necesitas iniciar sesión para crear un intercambio.</p> : null}
             </form>
 
-            <div className="list-stack">
-              {trades.map((trade) => (
-                <article className="list-item" key={trade.id}>
-                  <div>
-                    <strong>Trade #{trade.id}</strong>
-                    <p>
-                      Estado: <span>{trade.status}</span>
-                    </p>
-                    <p>{trade.message}</p>
-                  </div>
-                  <div className="mini-meta">
-                    <span>Offered: {trade.offeredGame?.title || trade.offeredGameId}</span>
-                    <span>Requested: {trade.requestedGame?.title || trade.requestedGameId}</span>
-                  </div>
-                </article>
-              ))}
+            <div className="trades-split" style={{ display: 'flex', gap: '2rem', flexWrap: 'wrap' }}>
+              <div className="incoming-trades" style={{ flex: '1 1 45%' }}>
+                <h4 style={{ marginBottom: '1rem', color: '#333' }}>📥 Solicitudes Recibidas (Incoming)</h4>
+                <div className="list-stack">
+                  {trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId).length === 0 ? (
+                    <p className="hint">No tienes solicitudes de intercambio recibidas.</p>
+                  ) : trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId).map((trade) => (
+                    <article className="list-item" key={trade.id}>
+                      <div>
+                        <strong>Trade #{trade.id}</strong>
+                        <p>
+                          Estado:{' '}
+                          <span className={`status-badge status-${trade.status}`} style={{ fontWeight: 'bold', textTransform: 'uppercase', fontSize: '0.85em', padding: '2px 6px', borderRadius: '4px', backgroundColor: trade.status === 'pending' ? '#fff3cd' : trade.status === 'accepted' ? '#d4edda' : trade.status === 'completed' ? '#cce5ff' : '#f8d7da', color: trade.status === 'pending' ? '#856404' : trade.status === 'accepted' ? '#155724' : trade.status === 'completed' ? '#004085' : '#721c24' }}>
+                            {trade.status}
+                          </span>
+                        </p>
+                        <p>{trade.message}</p>
+
+                        <div className="trade-actions" style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
+                          {trade.status === 'pending' && (
+                            <>
+                              <button
+                                style={{ backgroundColor: '#28a745', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                                onClick={() => updateTradeStatus(trade.id, 'accepted')}
+                                disabled={loading}
+                              >
+                                Accept
+                              </button>
+                              <button
+                                style={{ backgroundColor: '#dc3545', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                                onClick={() => updateTradeStatus(trade.id, 'rejected')}
+                                disabled={loading}
+                              >
+                                Reject
+                              </button>
+                            </>
+                          )}
+                          {trade.status === 'accepted' && (
+                            <button
+                              style={{ backgroundColor: '#007bff', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                              onClick={() => updateTradeStatus(trade.id, 'completed')}
+                              disabled={loading}
+                            >
+                              Complete Trade
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mini-meta">
+                        <span>Offered: {trade.offeredGame?.title || trade.offeredGameId}</span>
+                        <span>Requested: {trade.requestedGame?.title || trade.requestedGameId}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+
+              <div className="outgoing-trades" style={{ flex: '1 1 45%' }}>
+                <h4 style={{ marginBottom: '1rem', color: '#333' }}>📤 Solicitudes Enviadas (Outgoing)</h4>
+                <div className="list-stack">
+                  {trades.filter(t => (t.requesterId || t.id_sender) === currentUserId).length === 0 ? (
+                    <p className="hint">No has enviado ninguna solicitud de intercambio.</p>
+                  ) : trades.filter(t => (t.requesterId || t.id_sender) === currentUserId).map((trade) => (
+                    <article className="list-item" key={trade.id}>
+                      <div>
+                        <strong>Trade #{trade.id}</strong>
+                        <p>
+                          Estado:{' '}
+                          <span className={`status-badge status-${trade.status}`} style={{ fontWeight: 'bold', textTransform: 'uppercase', fontSize: '0.85em', padding: '2px 6px', borderRadius: '4px', backgroundColor: trade.status === 'pending' ? '#fff3cd' : trade.status === 'accepted' ? '#d4edda' : trade.status === 'completed' ? '#cce5ff' : '#f8d7da', color: trade.status === 'pending' ? '#856404' : trade.status === 'accepted' ? '#155724' : trade.status === 'completed' ? '#004085' : '#721c24' }}>
+                            {trade.status}
+                          </span>
+                        </p>
+                        <p>{trade.message}</p>
+
+                        <div className="trade-actions" style={{ marginTop: '12px', display: 'flex', gap: '10px' }}>
+                          {trade.status === 'pending' && (
+                            <button
+                              style={{ backgroundColor: '#6c757d', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                              onClick={() => updateTradeStatus(trade.id, 'cancelled')}
+                              disabled={loading}
+                            >
+                              Cancel Trade
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <div className="mini-meta">
+                        <span>Offered: {trade.offeredGame?.title || trade.offeredGameId}</span>
+                        <span>Requested: {trade.requestedGame?.title || trade.requestedGameId}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
             </div>
           </section>
         ) : null}
@@ -1650,11 +1784,36 @@ function App() {
           <section className="panel">
             <div className="section-header">
               <div>
-                <span className="eyebrow">Mensajes</span>
-                <h3>Conversaciones</h3>
+                <span className="eyebrow">Notificaciones</span>
+                <h3>Mensajes y Solicitudes</h3>
               </div>
             </div>
 
+            <div className="list-stack" style={{ marginBottom: '2.5rem' }}>
+              <h4 style={{ marginBottom: '1rem', color: '#333' }}>Nuevas Solicitudes de Intercambio</h4>
+              {trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId && t.status === 'pending').length > 0 ? (
+                trades.filter(t => (t.ownerId || t.id_receiver) === currentUserId && t.status === 'pending').map((trade) => (
+                  <article className="list-item" key={`notif-${trade.id}`} style={{ backgroundColor: '#fff3cd', borderLeft: '4px solid #ffc107', padding: '15px' }}>
+                    <div>
+                      <strong style={{ color: '#856404' }}>¡Tienes una nueva solicitud de intercambio!</strong>
+                      <p style={{ margin: '8px 0', color: '#555' }}>
+                        Han solicitado tu juego <strong>{trade.requestedGame?.title || trade.requestedGameId}</strong> a cambio de <strong>{trade.offeredGame?.title || trade.offeredGameId}</strong>.
+                      </p>
+                      <button
+                        style={{ marginTop: '5px', backgroundColor: '#007bff', color: 'white', border: 'none', padding: '6px 12px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+                        onClick={() => setActiveSection('trades')}
+                      >
+                        Ver intercambio
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <p className="hint">No tienes nuevas solicitudes de intercambio.</p>
+              )}
+            </div>
+
+            <h4 style={{ marginBottom: '1rem', color: '#333' }}>Enviar Mensaje</h4>
             <form className="form-card" onSubmit={handleMessageSubmit}>
               <label>
                 Destinatario
@@ -1854,6 +2013,19 @@ function App() {
                 Cerrar sesión
               </button>
             </div>
+
+            {hasSession && (
+              <div className="profile-config" style={{ marginTop: '2rem', padding: '1.5rem', backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #e9ecef' }}>
+                <h4 style={{ marginBottom: '1rem', color: '#333' }}>⚙️ Configuración</h4>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', color: '#555' }}>
+                  <input type="checkbox" defaultChecked style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+                  Permitir recibir nuevas solicitudes de intercambio
+                </label>
+                <p className="hint" style={{ marginTop: '8px', marginLeft: '28px' }}>
+                  Si desactivas esta opción, otros usuarios no podrán enviarte solicitudes de intercambio para tus juegos.
+                </p>
+              </div>
+            )}
           </section>
         ) : null}
 

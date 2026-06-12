@@ -20,7 +20,11 @@ let dbStatus = {
 };
 
 app.use(helmet());
-app.use(cors());
+app.use(cors({
+  origin: ['https://game-for-all-steel.vercel.app', 'http://localhost:5173', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
 app.use(express.json());
 
 app.get('/', (req, res) => {
