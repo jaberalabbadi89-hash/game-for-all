@@ -1,0 +1,11 @@
+# Ignore local environment files
+game-for-all/backend/.env
+
+# Ignore node_modules
+game-for-all/backend/node_modules/
+node_modules/
+
+# Ignore IDE files and OS files
+.DS_Store
+.vscode/
+.idea/

@@ -334,9 +334,50 @@ async function deleteGame(req, res, next) {
   }
 }
 
+async function getMyGames(req, res, next) {
+  try {
+    const userId = req.user.id;
+    const rows = await query(
+      `
+        SELECT
+          g.*,
+          u.id_user AS owner_id_user,
+          u.username AS owner_username,
+          u.email AS owner_email,
+          u.avatar AS owner_avatar,
+          u.role AS owner_role,
+          u.created_at AS owner_created_at
+        FROM Games g
+        INNER JOIN Users u ON u.id_user = g.id_owner
+        WHERE g.id_owner = ?
+        ORDER BY g.created_at DESC
+      `,
+      [userId]
+    );
+
+    const enrichedGames = rows.map((row) => {
+      const game = mapGameRow(row);
+      const owner = sanitizeUser({
+        id_user: row.owner_id_user,
+        username: row.owner_username,
+        email: row.owner_email,
+        avatar: row.owner_avatar,
+        role: row.owner_role,
+        created_at: row.owner_created_at,
+      });
+      return { ...game, owner };
+    });
+
+    return res.json(enrichedGames);
+  } catch (error) {
+    return next(error);
+  }
+}
+
 module.exports = {
   getGames,
   getGameById,
+  getMyGames,
   createGame,
   updateGame,
   deleteGame,

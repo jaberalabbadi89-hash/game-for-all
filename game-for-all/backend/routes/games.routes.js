@@ -4,6 +4,7 @@ const adminMiddleware = require('../middleware/admin.middleware');
 const {
   getGames,
   getGameById,
+  getMyGames,
   createGame,
   updateGame,
   deleteGame,
@@ -12,9 +13,11 @@ const {
 const router = express.Router();
 
 router.get('/', getGames);
+router.get('/my-games', authMiddleware, getMyGames);
 router.get('/:id', getGameById);
 router.post('/', authMiddleware, createGame);
 router.patch('/:id', authMiddleware, updateGame);
 router.delete('/:id', authMiddleware, deleteGame);
 
 module.exports = router;
+

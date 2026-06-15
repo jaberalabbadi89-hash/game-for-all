@@ -129,7 +129,7 @@ async function sendMessage(req, res, next) {
     );
 
     const row = rows[0];
-    return res.status(201).json({
+    const savedMessage = {
       id: row.id_message,
       senderId: row.sender_id,
       receiverId: row.receiver_id,
@@ -151,7 +151,19 @@ async function sendMessage(req, res, next) {
         role: row.receiver_role,
         created_at: row.receiver_created_at,
       }),
-    });
+    };
+
+    // ── Real-Time Delivery (Socket.io Private Room) ──────────────────────────
+    // Step 1: DB save was confirmed above.
+    // Step 2: Emit ONLY to receiver's private room — no broadcast to everyone.
+    const io = req.app.get('io');
+    if (io) {
+      io.to(`user_${receiverId}`).emit('receive_message', savedMessage);
+      console.log(`[Socket.io] Message emitted to room: user_${receiverId}`);
+    }
+
+    return res.status(201).json(savedMessage);
+
   } catch (error) {
     return next(error);
   }

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { io as socketIO } from 'socket.io-client';
 import './App.css';
 import { useRBAC } from './hooks/useRBAC';
 import { HeroSection } from './components/games/HeroSection';
@@ -117,6 +118,16 @@ function App() {
   });
   const [searchQuery, setSearchQuery] = useState('');
   const [platformFilter, setPlatformFilter] = useState('all');
+  const [myGames, setMyGames] = useState([]);
+  const [profileTab, setProfileTab] = useState('games');
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [selectedUser, setSelectedUser] = useState(null);
+
+  // Socket.io ref — persists across renders without triggering re-renders
+  const socketRef = useRef(null);
+  const chatEndRef = useRef(null);
+
+
 
   useEffect(() => {
     localStorage.setItem('gameForAllToken', token);
@@ -323,7 +334,89 @@ function App() {
     [favorites, games]
   );
 
+  // Load my games when profile is opened
+  useEffect(() => {
+    async function loadMyGames() {
+      if (!token || activeSection !== 'profile') {
+        return;
+      }
+      try {
+        const response = await fetch(`${API_BASE_URL}/games/my-games`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (response.ok) {
+          const data = await response.json();
+          setMyGames(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        // silent
+      }
+    }
+    loadMyGames();
+  }, [token, activeSection]);
+
+  // ── Socket.io: Real-Time Private Messaging ────────────────────────────────
+  useEffect(() => {
+    if (!user?.id) return; // Only connect when logged in
+
+    const SOCKET_URL = process.env.REACT_APP_API_URL
+      ? process.env.REACT_APP_API_URL.replace('/api', '')
+      : 'http://localhost:5000';
+
+    // Connect to Socket.io server
+    const socket = socketIO(SOCKET_URL, {
+      transports: ['websocket', 'polling'],
+      withCredentials: true,
+    });
+
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('[Socket.io] Connected:', socket.id);
+      // Join the user's private room so ONLY they receive their messages
+      socket.emit('join_room', user.id);
+    });
+
+    // Optimistic UI: append message directly to state — NO full API refetch
+    socket.on('receive_message', (newMsg) => {
+      console.log('[Socket.io] Real-time message received:', newMsg);
+      setMessages((prev) => {
+        // Avoid duplicates
+        if (prev.some((m) => m.id === newMsg.id)) return prev;
+        return [newMsg, ...prev];
+      });
+      // Increment unread badge unless user is already on messages tab
+      setUnreadCount((c) => c + 1);
+    });
+
+    socket.on('disconnect', () => {
+      console.log('[Socket.io] Disconnected');
+    });
+
+    socket.on('connect_error', (err) => {
+      console.warn('[Socket.io] Connection error:', err.message);
+    });
+
+    // Cleanup: remove listeners and disconnect — prevents memory leaks
+    return () => {
+      socket.off('receive_message');
+      socket.off('connect');
+      socket.off('disconnect');
+      socket.disconnect();
+      socketRef.current = null;
+      console.log('[Socket.io] Cleaned up');
+    };
+  }, [user?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reset unread badge when user opens Messages tab in profile
+  useEffect(() => {
+    if (activeSection === 'profile' && profileTab === 'messages') {
+      setUnreadCount(0);
+    }
+  }, [activeSection, profileTab]);
+
   const messageRecipients = useMemo(() => {
+
     const recipients = new Map();
 
     games.forEach((game) => {
@@ -343,6 +436,76 @@ function App() {
 
     return Array.from(recipients.values());
   }, [games, trades, user]);
+
+  const conversations = useMemo(() => {
+    if (!user || !messages) return [];
+    const map = new Map();
+    // messages is sorted DESC (newest first)
+    messages.forEach(msg => {
+      const partner = msg.senderId === user.id ? msg.receiver : msg.sender;
+      if (!partner || !partner.id) return;
+      if (!map.has(partner.id)) {
+        map.set(partner.id, {
+          user: partner,
+          lastMessage: msg
+        });
+      }
+    });
+    if (selectedUser && !map.has(selectedUser.id)) {
+      map.set(selectedUser.id, {
+        user: selectedUser,
+        lastMessage: null
+      });
+    }
+    return Array.from(map.values());
+  }, [messages, user, selectedUser]);
+
+  const activeChatMessages = useMemo(() => {
+    if (!user || !selectedUser) return [];
+    return messages
+      .filter(msg =>
+        (msg.senderId === user.id && msg.receiverId === selectedUser.id) ||
+        (msg.senderId === selectedUser.id && msg.receiverId === user.id)
+      )
+      .sort((a, b) => new Date(a.sentAt) - new Date(b.sentAt));
+  }, [messages, user, selectedUser]);
+
+  const activeTrade = useMemo(() => {
+    if (!user || !selectedUser) return null;
+    return trades.find(t =>
+      t.status === 'pending' &&
+      (
+        (t.requesterId === user.id && t.ownerId === selectedUser.id) ||
+        (t.requesterId === selectedUser.id && t.ownerId === user.id)
+      )
+    );
+  }, [trades, user, selectedUser]);
+
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeChatMessages]);
+
+  // Automatically select conversation partner when messageForm.receiverId is changed by an external trigger (like contact button)
+  useEffect(() => {
+    if (messageForm.receiverId) {
+      const rId = Number(messageForm.receiverId);
+      if (selectedUser?.id === rId) return;
+      const found = messageRecipients.find(r => r.id === rId);
+      if (found) {
+        setSelectedUser(found);
+      } else {
+        // Fallback search in messages
+        let fallbackUser = null;
+        for (const msg of messages) {
+          if (msg.senderId === rId) { fallbackUser = msg.sender; break; }
+          if (msg.receiverId === rId) { fallbackUser = msg.receiver; break; }
+        }
+        setSelectedUser(fallbackUser || { id: rId, username: `Usuario #${rId}` });
+      }
+    }
+  }, [messageForm.receiverId, messageRecipients, messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ratingRecipients = useMemo(() => {
     const recipients = new Map();
@@ -790,7 +953,7 @@ function App() {
   async function handleMessageSubmit(event) {
     event.preventDefault();
 
-    if (!token) {
+    if (!token || !user) {
       setActiveSection('auth');
       setError('Necesitas iniciar sesión para enviar mensajes.');
       return;
@@ -806,27 +969,39 @@ function App() {
     setStatus('');
 
     try {
-      const response = await fetch(`${API_BASE_URL}/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('send_message', {
+          senderId: user.id,
           receiverId: Number(messageForm.receiverId),
           messageText: messageForm.messageText,
-        }),
-      });
+        });
+        setMessageForm((f) => ({ ...f, messageText: '' }));
+      } else {
+        const response = await fetch(`${API_BASE_URL}/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            receiverId: Number(messageForm.receiverId),
+            messageText: messageForm.messageText,
+          }),
+        });
 
-      const data = await response.json();
+        const data = await response.json();
 
-      if (!response.ok) {
-        throw new Error(data.error || 'No se pudo enviar el mensaje');
+        if (!response.ok) {
+          throw new Error(data.error || 'No se pudo enviar el mensaje');
+        }
+
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === data.id)) return prev;
+          return [data, ...prev];
+        });
+        setMessageForm((f) => ({ ...f, messageText: '' }));
       }
-
-      await loadMessages();
-      setStatus('Mensaje enviado con éxito.');
-      setActiveSection('messages');
+      setStatus('Mensaje enviado.');
     } catch (err) {
       setError(err.message || 'Error enviando mensaje');
     } finally {
@@ -894,6 +1069,7 @@ function App() {
     setUser(null);
     setTrades([]);
     setMessages([]);
+    setSelectedUser(null);
     setRatings([]);
     setFavorites([]);
     setSelectedGameId(null);
@@ -994,6 +1170,7 @@ function App() {
     );
   }
 
+  // eslint-disable-next-line no-unused-vars
   function renderLanding() {
     return (
       <main className="content landing-content">
@@ -2043,30 +2220,675 @@ function App() {
 
         {activeSection === 'profile' ? (
           <section className="panel profile-layout">
+            {/* ── Header del Perfil ─────────────────────────────────── */}
             <div className="profile-card">
-              <span className="eyebrow">Perfil</span>
-              <h3>{user ? user.username : 'Invitado'}</h3>
-              <p>{user ? user.email : 'Inicia sesión para ver tu información.'}</p>
-              <div className="chips">
-                <span>{user?.role || 'guest'}</span>
-                <span>{token ? 'Sesión activa' : 'Sin sesión'}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1.2rem' }}>
+                <div style={{
+                  width: '64px', height: '64px', borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #6c5ce7, #a78bfa)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '1.8rem', fontWeight: 'bold', color: '#fff', flexShrink: 0,
+                }}>
+                  {(user?.username?.[0] || '?').toUpperCase()}
+                </div>
+                <div>
+                  <span className="eyebrow">Perfil</span>
+                  <h3 style={{ margin: 0 }}>{user ? user.username : 'Invitado'}</h3>
+                  <p style={{ margin: 0, opacity: 0.7, fontSize: '0.9rem' }}>{user ? user.email : 'Inicia sesión para ver tu información.'}</p>
+                  <div className="chips" style={{ marginTop: '6px' }}>
+                    <span>{user?.role || 'guest'}</span>
+                    <span>{token ? '🟢 Sesión activa' : '🔴 Sin sesión'}</span>
+                  </div>
+                </div>
               </div>
-              <button className="secondary-button" type="button" onClick={logout} disabled={!token}>
+
+              {/* Estadísticas rápidas */}
+              <div style={{ display: 'flex', gap: '1.5rem', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+                <div style={{ textAlign: 'center', padding: '0.8rem 1.5rem', background: 'rgba(108,92,231,0.15)', borderRadius: '12px', border: '1px solid rgba(108,92,231,0.3)' }}>
+                  <div style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#a78bfa' }}>{myGames.length}</div>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.7 }}>Mis juegos</div>
+                </div>
+                <div style={{ textAlign: 'center', padding: '0.8rem 1.5rem', background: 'rgba(253,203,110,0.15)', borderRadius: '12px', border: '1px solid rgba(253,203,110,0.3)' }}>
+                  <div style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#fdcb6e' }}>{trades.filter(t => t.is_receiver && t.status === 'pending').length}</div>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.7 }}>Deuotes recibidas</div>
+                </div>
+                <div style={{ textAlign: 'center', padding: '0.8rem 1.5rem', background: 'rgba(0,206,201,0.15)', borderRadius: '12px', border: '1px solid rgba(0,206,201,0.3)' }}>
+                  <div style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#00cec9' }}>{messages.length}</div>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.7 }}>Mensajes</div>
+                </div>
+                <div style={{ textAlign: 'center', padding: '0.8rem 1.5rem', background: 'rgba(232,67,147,0.15)', borderRadius: '12px', border: '1px solid rgba(232,67,147,0.3)' }}>
+                  <div style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#e84393' }}>{favoriteGames.length}</div>
+                  <div style={{ fontSize: '0.8rem', opacity: 0.7 }}>Favoritos</div>
+                </div>
+              </div>
+
+              <button className="secondary-button" style={{ marginTop: '1.5rem' }} type="button" onClick={logout} disabled={!token}>
                 Cerrar sesión
               </button>
             </div>
 
+            {/* ── Tabs de navegación ────────────────────────────────── */}
             {hasSession && (
-              <div className="profile-config" style={{ marginTop: '2rem', padding: '1.5rem', backgroundColor: '#f8f9fa', borderRadius: '8px', border: '1px solid #e9ecef' }}>
-                <h4 style={{ marginBottom: '1rem', color: '#333' }}>⚙️ Configuración</h4>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '10px', cursor: 'pointer', color: '#555' }}>
-                  <input type="checkbox" defaultChecked style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
-                  Permitir recibir nuevas solicitudes de intercambio
-                </label>
-                <p className="hint" style={{ marginTop: '8px', marginLeft: '28px' }}>
-                  Si desactivas esta opción, otros usuarios no podrán enviarte solicitudes de intercambio para tus juegos.
-                </p>
-              </div>
+              <>
+                <div style={{
+                  display: 'flex', gap: '6px', margin: '2rem 0 1.5rem',
+                  borderBottom: '2px solid rgba(255,255,255,0.08)', paddingBottom: '0',
+                }}>
+                  {[
+                    { id: 'games',    icon: '🎮', label: 'Mis Juegos' },
+                    { id: 'incoming', icon: '📥', label: `Deuotes recibidas ${trades.filter(t => t.is_receiver && t.status === 'pending').length > 0 ? `(${trades.filter(t => t.is_receiver && t.status === 'pending').length})` : ''}` },
+                    { id: 'outgoing', icon: '📤', label: 'Mis deuotes' },
+                    { id: 'messages', icon: '💬', label: unreadCount > 0 ? `Mensajes (${unreadCount} 🔴)` : 'Mensajes' },
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setProfileTab(tab.id)}
+                      style={{
+                        padding: '10px 18px', border: 'none', cursor: 'pointer',
+                        fontSize: '0.9rem', fontWeight: profileTab === tab.id ? '700' : '400',
+                        background: 'transparent',
+                        color: profileTab === tab.id ? '#a78bfa' : 'rgba(255,255,255,0.5)',
+                        borderBottom: profileTab === tab.id ? '2px solid #a78bfa' : '2px solid transparent',
+                        marginBottom: '-2px', borderRadius: '0', transition: 'all 0.2s',
+                      }}
+                    >
+                      {tab.icon} {tab.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* ── Tab: Mis Juegos ─────────────────────────────── */}
+                {profileTab === 'games' && (
+                  <div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.2rem' }}>
+                      <h4 style={{ margin: 0 }}>🎮 Juegos que he publicado</h4>
+                      <button
+                        className="primary-button"
+                        type="button"
+                        style={{ padding: '8px 18px', fontSize: '0.9rem' }}
+                        onClick={() => setActiveSection('publish')}
+                      >
+                        + Publicar nuevo
+                      </button>
+                    </div>
+                    {myGames.length === 0 ? (
+                      <div className="empty-state">
+                        <h4>No tienes juegos publicados</h4>
+                        <p>Publica tu primer juego para que otros usuarios puedan enviarte deuotes de intercambio.</p>
+                        <button className="primary-button" type="button" onClick={() => setActiveSection('publish')}>
+                          Publicar primer juego
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="cards-grid">
+                        {myGames.map(game => (
+                          <article key={game.id} style={{
+                            background: 'rgba(255,255,255,0.04)', borderRadius: '14px',
+                            border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden',
+                            transition: 'transform 0.2s',
+                          }}>
+                            {game.image ? (
+                              <img
+                                src={game.image}
+                                alt={game.title}
+                                style={{ width: '100%', height: '140px', objectFit: 'cover' }}
+                              />
+                            ) : (
+                              <div style={{
+                                height: '140px', background: 'linear-gradient(135deg, #1a1a2e, #16213e)',
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: '2.5rem',
+                              }}>🎮</div>
+                            )}
+                            <div style={{ padding: '1rem' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '6px' }}>
+                                <strong style={{ fontSize: '0.95rem' }}>{game.title}</strong>
+                                <span style={{
+                                  fontSize: '0.75rem', padding: '2px 8px', borderRadius: '20px',
+                                  background: '#a78bfa22', color: '#a78bfa', fontWeight: '600',
+                                }}>{game.platform}</span>
+                              </div>
+                              <p style={{ fontSize: '0.82rem', opacity: 0.6, margin: '0 0 12px' }}>{game.description || 'Sin descripción'}</p>
+                              <div style={{ display: 'flex', gap: '8px' }}>
+                                <button
+                                  type="button"
+                                  onClick={() => startEditingGame(game)}
+                                  style={{
+                                    flex: 1, padding: '7px', border: '1px solid rgba(167,139,250,0.4)',
+                                    borderRadius: '8px', background: 'transparent', color: '#a78bfa',
+                                    cursor: 'pointer', fontSize: '0.82rem',
+                                  }}
+                                >
+                                  ✏️ Editar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleGameDelete(game.id)}
+                                  style={{
+                                    flex: 1, padding: '7px', border: '1px solid rgba(220,53,69,0.4)',
+                                    borderRadius: '8px', background: 'transparent', color: '#dc3545',
+                                    cursor: 'pointer', fontSize: '0.82rem',
+                                  }}
+                                >
+                                  🗑️ Eliminar
+                                </button>
+                              </div>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Tab: Deuotes recibidas ───────────────────────── */}
+                {profileTab === 'incoming' && (
+                  <div>
+                    <h4 style={{ marginBottom: '1.2rem' }}>📥 Alguien quiere intercambiar contigo</h4>
+                    {trades.filter(t => t.is_receiver).length === 0 ? (
+                      <div className="empty-state">
+                        <h4>No has recibido deuotes aún</h4>
+                        <p>Cuando alguien quiera uno de tus juegos, te aparecerá aquí para que puedas aceptar o rechazar.</p>
+                      </div>
+                    ) : (
+                      <div className="list-stack">
+                        {trades.filter(t => t.is_receiver).map(trade => (
+                          <article key={trade.id} className="list-item" style={{
+                            borderLeft: `4px solid ${
+                              trade.status === 'pending'  ? '#ffc107' :
+                              trade.status === 'accepted' ? '#28a745' :
+                              trade.status === 'rejected' ? '#dc3545' : '#6c757d'
+                            }`,
+                            padding: '1.2rem',
+                          }}>
+                            {/* Cabecera */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+                              <div>
+                                <strong style={{ color: '#fff', fontSize: '1rem' }}>
+                                  👤 {trade.requester?.username} quiere tu juego
+                                </strong>
+                                <p style={{ margin: '4px 0 0', color: '#ccc', fontSize: '0.88rem' }}>
+                                  Te ofrece <strong style={{ color: '#a78bfa' }}>«{trade.offeredGame?.title}»</strong> a cambio de <strong style={{ color: '#fdcb6e' }}>«{trade.requestedGame?.title}»</strong>
+                                </p>
+                              </div>
+                              <span style={{
+                                fontSize: '0.75rem', padding: '3px 10px', borderRadius: '20px', fontWeight: '700',
+                                background: trade.status === 'pending' ? '#ffc10722' : trade.status === 'accepted' ? '#28a74522' : '#dc354522',
+                                color: trade.status === 'pending' ? '#ffc107' : trade.status === 'accepted' ? '#28a745' : '#dc3545',
+                                whiteSpace: 'nowrap',
+                              }}>
+                                {trade.status === 'pending' ? '⏳ Pendiente' : trade.status === 'accepted' ? '✅ Aceptado' : trade.status === 'rejected' ? '❌ Rechazado' : trade.status}
+                              </span>
+                            </div>
+
+                            {trade.message && (
+                              <p style={{ color: '#bbb', fontSize: '0.85rem', fontStyle: 'italic', margin: '0 0 12px', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+                                💬 "{trade.message}"
+                              </p>
+                            )}
+
+                            {/* Acciones */}
+                            {trade.can_take_action ? (
+                              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                                <button
+                                  onClick={() => updateTradeStatus(trade.id, 'accepted')}
+                                  disabled={loading}
+                                  style={{ padding: '9px 22px', borderRadius: '8px', background: '#28a745', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.9rem' }}
+                                >
+                                  ✅ Aceptar deuote
+                                </button>
+                                <button
+                                  onClick={() => setRejectModal({ open: true, tradeId: trade.id, reason: '' })}
+                                  disabled={loading}
+                                  style={{ padding: '9px 22px', borderRadius: '8px', background: '#dc3545', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.9rem' }}
+                                >
+                                  ❌ Rechazar
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setMessageForm(f => ({ ...f, receiverId: String(trade.requester?.id || '') }));
+                                    setProfileTab('messages');
+                                  }}
+                                  style={{ padding: '9px 22px', borderRadius: '8px', background: '#6c5ce7', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.9rem' }}
+                                >
+                                  💬 Contactar
+                                </button>
+                              </div>
+                            ) : trade.status === 'accepted' ? (
+                              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                                <button
+                                  onClick={() => updateTradeStatus(trade.id, 'completed')}
+                                  disabled={loading}
+                                  style={{ padding: '9px 22px', borderRadius: '8px', background: '#007bff', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.9rem' }}
+                                >
+                                  🎉 Marcar como completado
+                                </button>
+                              </div>
+                            ) : null}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Tab: Mis deuotes enviadas ───────────────────── */}
+                {profileTab === 'outgoing' && (
+                  <div>
+                    <h4 style={{ marginBottom: '1.2rem' }}>📤 Deuotes que he enviado</h4>
+                    {trades.filter(t => !t.is_receiver).length === 0 ? (
+                      <div className="empty-state">
+                        <h4>No has enviado deuotes aún</h4>
+                        <p>Ve a explorar juegos y haz clic en el botón de intercambio para proponer un trato.</p>
+                        <button className="primary-button" type="button" onClick={() => setActiveSection('games')}>
+                          Explorar juegos
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="list-stack">
+                        {trades.filter(t => !t.is_receiver).map(trade => (
+                          <article key={trade.id} className="list-item" style={{
+                            borderLeft: `4px solid ${
+                              trade.status === 'pending'  ? '#ffc107' :
+                              trade.status === 'accepted' ? '#28a745' :
+                              trade.status === 'rejected' ? '#dc3545' : '#6c757d'
+                            }`,
+                            padding: '1.2rem',
+                          }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' }}>
+                              <div>
+                                <strong style={{ color: '#fff', fontSize: '1rem' }}>
+                                  📨 Enviado a {trade.owner?.username}
+                                </strong>
+                                <p style={{ margin: '4px 0 0', color: '#ccc', fontSize: '0.88rem' }}>
+                                  Ofreces <strong style={{ color: '#a78bfa' }}>«{trade.offeredGame?.title}»</strong> a cambio de <strong style={{ color: '#fdcb6e' }}>«{trade.requestedGame?.title}»</strong>
+                                </p>
+                              </div>
+                              <span style={{
+                                fontSize: '0.75rem', padding: '3px 10px', borderRadius: '20px', fontWeight: '700',
+                                background: trade.status === 'pending' ? '#ffc10722' : trade.status === 'accepted' ? '#28a74522' : '#dc354522',
+                                color: trade.status === 'pending' ? '#ffc107' : trade.status === 'accepted' ? '#28a745' : '#dc3545',
+                                whiteSpace: 'nowrap',
+                              }}>
+                                {trade.status === 'pending' ? '⏳ Pendiente' : trade.status === 'accepted' ? '✅ Aceptado' : trade.status === 'rejected' ? '❌ Rechazado' : trade.status}
+                              </span>
+                            </div>
+
+                            {trade.message && (
+                              <p style={{ color: '#bbb', fontSize: '0.85rem', fontStyle: 'italic', margin: '0 0 12px', padding: '8px 12px', background: 'rgba(255,255,255,0.05)', borderRadius: '8px' }}>
+                                💬 "{trade.message}"
+                              </p>
+                            )}
+
+                            {trade.status === 'pending' && (
+                              <button
+                                onClick={() => updateTradeStatus(trade.id, 'cancelled')}
+                                disabled={loading}
+                                style={{ padding: '7px 18px', borderRadius: '8px', background: '#6c757d', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.88rem' }}
+                              >
+                                Cancelar deuote
+                              </button>
+                            )}
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Tab: Mensajes ───────────────────────────────── */}
+                {profileTab === 'messages' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                      <h4 style={{ margin: 0 }}>💬 Chat de Intercambios</h4>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.85rem', opacity: 0.7 }}>Nuevo chat con:</span>
+                        <select
+                          value={messageForm.receiverId}
+                          onChange={e => {
+                            const val = e.target.value;
+                            setMessageForm(f => ({ ...f, receiverId: val }));
+                            if (val) {
+                              const recipientId = Number(val);
+                              const found = messageRecipients.find(r => r.id === recipientId);
+                              if (found) {
+                                setSelectedUser(found);
+                              } else {
+                                setSelectedUser({ id: recipientId, username: `Usuario #${recipientId}` });
+                              }
+                            }
+                          }}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: '8px',
+                            background: '#2d3436',
+                            color: '#fff',
+                            border: '1px solid rgba(255,255,255,0.1)',
+                            fontSize: '0.85rem',
+                          }}
+                        >
+                          <option value="">Selecciona...</option>
+                          {messageRecipients.map(r => (
+                            <option key={r.id} value={r.id}>{r.username}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(12, 1fr)',
+                      border: '1px solid rgba(255,255,255,0.08)',
+                      borderRadius: '16px',
+                      overflow: 'hidden',
+                      background: 'rgba(20, 20, 20, 0.6)',
+                      backdropFilter: 'blur(10px)',
+                      boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.37)',
+                      minHeight: '550px',
+                    }}>
+                      {/* Left Column: Conversations List */}
+                      <div style={{
+                        gridColumn: 'span 4',
+                        borderRight: '1px solid rgba(255,255,255,0.08)',
+                        background: 'rgba(255,255,255,0.02)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        overflowY: 'auto',
+                        maxHeight: '550px',
+                      }}>
+                        <div style={{ padding: '1rem', borderBottom: '1px solid rgba(255,255,255,0.05)', fontWeight: 'bold', fontSize: '0.9rem', color: '#a78bfa' }}>
+                          Conversaciones ({conversations.length})
+                        </div>
+
+                        {conversations.length === 0 ? (
+                          <div style={{ padding: '2rem 1rem', textAlign: 'center', opacity: 0.5, fontSize: '0.85rem' }}>
+                            No hay conversaciones activas.
+                          </div>
+                        ) : (
+                          conversations.map(c => {
+                            const isSelected = selectedUser?.id === c.user.id;
+                            const initial = (c.user.username?.[0] || '?').toUpperCase();
+                            const lastMsgText = c.lastMessage ? c.lastMessage.messageText : 'Sin mensajes aún';
+                            const formattedTime = c.lastMessage
+                              ? new Date(c.lastMessage.sentAt).toLocaleDateString('es-ES', { month: 'short', day: 'numeric' })
+                              : '';
+                            return (
+                              <div
+                                key={c.user.id}
+                                onClick={() => {
+                                  setSelectedUser(c.user);
+                                  setMessageForm(f => ({ ...f, receiverId: String(c.user.id) }));
+                                }}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '12px',
+                                  padding: '12px 16px',
+                                  cursor: 'pointer',
+                                  background: isSelected ? 'rgba(108, 92, 231, 0.15)' : 'transparent',
+                                  borderLeft: isSelected ? '4px solid #a78bfa' : '4px solid transparent',
+                                  borderBottom: '1px solid rgba(255,255,255,0.03)',
+                                  transition: 'background 0.2s',
+                                }}
+                              >
+                                <div style={{
+                                  width: '38px', height: '38px', borderRadius: '50%',
+                                  background: isSelected ? 'linear-gradient(135deg, #a78bfa, #6c5ce7)' : 'linear-gradient(135deg, #4b5563, #374151)',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  fontSize: '0.95rem', fontWeight: 'bold', color: '#fff', flexShrink: 0
+                                }}>
+                                  {initial}
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                                    <strong style={{ color: '#fff', fontSize: '0.88rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                                      {c.user.username}
+                                    </strong>
+                                    {formattedTime && (
+                                      <span style={{ fontSize: '0.75rem', opacity: 0.4, flexShrink: 0 }}>
+                                        {formattedTime}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p style={{
+                                    margin: '3px 0 0 0',
+                                    fontSize: '0.8rem',
+                                    color: 'rgba(255,255,255,0.6)',
+                                    textOverflow: 'ellipsis',
+                                    overflow: 'hidden',
+                                    whiteSpace: 'nowrap'
+                                  }}>
+                                    {lastMsgText}
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+
+                      {/* Right Column: Chat View */}
+                      <div style={{
+                        gridColumn: 'span 8',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        background: 'rgba(255,255,255,0.01)',
+                        maxHeight: '550px',
+                      }}>
+                        {selectedUser ? (
+                          <>
+                            {/* Chat Header */}
+                            <div style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'space-between',
+                              padding: '12px 20px',
+                              borderBottom: '1px solid rgba(255,255,255,0.08)',
+                              background: 'rgba(0, 0, 0, 0.2)',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <div style={{
+                                  width: '32px', height: '32px', borderRadius: '50%',
+                                  background: 'linear-gradient(135deg, #00cec9, #0984e3)',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                  fontSize: '0.85rem', fontWeight: 'bold', color: '#fff'
+                                }}>
+                                  {(selectedUser.username?.[0] || '?').toUpperCase()}
+                                </div>
+                                <div>
+                                  <strong style={{ color: '#fff', fontSize: '0.92rem' }}>{selectedUser.username}</strong>
+                                  <div style={{ fontSize: '0.75rem', opacity: 0.5 }}>{selectedUser.email}</div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Active Trade Banner/Widget */}
+                            {activeTrade && (
+                              <div style={{
+                                background: 'linear-gradient(135deg, rgba(108, 92, 231, 0.2), rgba(167, 139, 250, 0.2))',
+                                borderBottom: '1px solid rgba(108, 92, 231, 0.3)',
+                                padding: '12px 20px',
+                                display: 'flex',
+                                flexDirection: 'row',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                gap: '15px',
+                              }}>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                  <span style={{ fontSize: '0.78rem', textTransform: 'uppercase', tracking: 'wide', color: '#a78bfa', fontWeight: 'bold' }}>
+                                    🤝 Solicitud de Intercambio Pendiente
+                                  </span>
+                                  <span style={{ fontSize: '0.88rem', color: '#eee' }}>
+                                    Ofrece: <strong>{activeTrade.offeredGame?.title || activeTrade.offeredGameId}</strong> <span style={{ color: '#a78bfa' }}>🔁</span> Solicita: <strong>{activeTrade.requestedGame?.title || activeTrade.requestedGameId}</strong>
+                                  </span>
+                                  {activeTrade.message && (
+                                    <span style={{ fontSize: '0.8rem', opacity: 0.8, color: '#ccc', fontStyle: 'italic' }}>
+                                      "{activeTrade.message}"
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                  {activeTrade.ownerId === user.id ? (
+                                    <>
+                                      <button
+                                        onClick={() => updateTradeStatus(activeTrade.id, 'accepted')}
+                                        disabled={loading}
+                                        style={{
+                                          padding: '6px 14px', borderRadius: '8px', background: '#28a745', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 'bold'
+                                        }}
+                                      >
+                                        ✅ Aceptar
+                                      </button>
+                                      <button
+                                        onClick={() => setRejectModal({ open: true, tradeId: activeTrade.id, reason: '' })}
+                                        disabled={loading}
+                                        style={{
+                                          padding: '6px 14px', borderRadius: '8px', background: '#dc3545', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 'bold'
+                                        }}
+                                      >
+                                        ❌ Rechazar
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                      <span style={{ fontSize: '0.82rem', opacity: 0.7 }}>Esperando respuesta...</span>
+                                      <button
+                                        onClick={() => updateTradeStatus(activeTrade.id, 'cancelled')}
+                                        disabled={loading}
+                                        style={{
+                                          padding: '6px 12px', borderRadius: '8px', background: '#6c757d', color: '#fff', border: 'none', cursor: 'pointer', fontSize: '0.8rem'
+                                        }}
+                                      >
+                                        Cancelar
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Active Chat Messages */}
+                            <div style={{
+                              flex: 1,
+                              overflowY: 'auto',
+                              padding: '1.5rem',
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '12px',
+                              minHeight: '0',
+                            }}>
+                              {activeChatMessages.length === 0 ? (
+                                <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', opacity: 0.4 }}>
+                                  <span style={{ fontSize: '2.5rem' }}>💬</span>
+                                  <p style={{ margin: '8px 0 0 0', fontSize: '0.9rem' }}>No hay mensajes anteriores.</p>
+                                  <p style={{ margin: '2px 0 0 0', fontSize: '0.8rem' }}>¡Escribe un mensaje para comenzar la conversación!</p>
+                                </div>
+                              ) : (
+                                activeChatMessages.map(msg => {
+                                  const isMe = msg.senderId === user.id;
+                                  return (
+                                    <div
+                                      key={msg.id}
+                                      style={{
+                                        display: 'flex',
+                                        justifyContent: isMe ? 'flex-end' : 'flex-start',
+                                        width: '100%',
+                                      }}
+                                    >
+                                      <div style={{
+                                        maxWidth: '70%',
+                                        padding: '10px 14px',
+                                        borderRadius: '16px',
+                                        borderBottomRightRadius: isMe ? '2px' : '16px',
+                                        borderBottomLeftRadius: isMe ? '16px' : '2px',
+                                        background: isMe ? '#6c5ce7' : 'rgba(255,255,255,0.08)',
+                                        color: '#fff',
+                                        boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
+                                      }}>
+                                        <p style={{ margin: 0, fontSize: '0.9rem', lineHeight: '1.4', wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                                          {msg.messageText}
+                                        </p>
+                                        <div style={{
+                                          textAlign: 'right',
+                                          fontSize: '0.7rem',
+                                          opacity: 0.5,
+                                          marginTop: '4px',
+                                        }}>
+                                          {new Date(msg.sentAt).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })
+                              )}
+                              <div ref={chatEndRef} />
+                            </div>
+
+                            {/* Chat Input Area */}
+                            <form
+                              onSubmit={handleMessageSubmit}
+                              style={{
+                                display: 'flex',
+                                gap: '10px',
+                                padding: '15px 20px',
+                                borderTop: '1px solid rgba(255,255,255,0.08)',
+                                background: 'rgba(0,0,0,0.2)',
+                                alignItems: 'center',
+                              }}
+                            >
+                              <input
+                                type="text"
+                                placeholder="Escribe tu mensaje aquí..."
+                                value={messageForm.messageText}
+                                onChange={e => setMessageForm(f => ({ ...f, messageText: e.target.value }))}
+                                disabled={loading}
+                                style={{
+                                  flex: 1,
+                                  background: 'rgba(255, 255, 255, 0.04)',
+                                  border: '1px solid rgba(255,255,255,0.12)',
+                                  borderRadius: '12px',
+                                  padding: '10px 16px',
+                                  color: '#fff',
+                                  fontSize: '0.9rem',
+                                  outline: 'none',
+                                }}
+                              />
+                              <button
+                                type="submit"
+                                disabled={loading || !messageForm.messageText.trim()}
+                                style={{
+                                  background: '#6c5ce7',
+                                  color: '#fff',
+                                  border: 'none',
+                                  borderRadius: '12px',
+                                  padding: '10px 20px',
+                                  cursor: 'pointer',
+                                  fontSize: '0.9rem',
+                                  fontWeight: 'bold',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '6px',
+                                  transition: 'background 0.2s',
+                                  opacity: (!messageForm.messageText.trim() || loading) ? 0.5 : 1,
+                                }}
+                              >
+                                {loading ? 'Enviando...' : '📨 Enviar'}
+                              </button>
+                            </form>
+                          </>
+                        ) : (
+                          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', opacity: 0.4 }}>
+                            <span style={{ fontSize: '3.5rem' }}>💬</span>
+                            <h4 style={{ margin: '15px 0 5px 0' }}>Chat de Intercambios</h4>
+                            <p style={{ margin: 0, fontSize: '0.9rem' }}>Selecciona un usuario de la lista de la izquierda para comenzar a chatear.</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </section>
         ) : null}
