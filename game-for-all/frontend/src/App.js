@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { io as socketIO } from 'socket.io-client';
 import './App.css';
 import { useRBAC } from './hooks/useRBAC';
@@ -19,14 +19,7 @@ const navItems = [
   { id: 'auth', label: 'Acceder' },
 ];
 
-const marketCategories = [
-  'Todas las categorías',
-  'PlayStation',
-  'Nintendo',
-  'Xbox',
-  'Accesorios',
-  'Ofertas',
-];
+
 
 const validSections = new Set([
   'home',
@@ -261,17 +254,7 @@ function App() {
   // Se dispara al hacer login/logout (token) y al abrir la sección de mensajes (activeSection)
   }, [token, activeSection]);
 
-  // Alias estable para poder llamar a loadMessages desde handleMessageSubmit
-  const loadMessages = useCallback(async () => {
-    if (!token) { setMessages([]); return; }
-    try {
-      const response = await fetch(`${API_BASE_URL}/messages`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      const data = await response.json();
-      if (response.ok) setMessages(Array.isArray(data) ? data : []);
-    } catch { /* silencioso */ }
-  }, [token]);
+
 
   useEffect(() => {
     async function loadRatings() {
@@ -1077,58 +1060,7 @@ function App() {
     setStatus('Sesión cerrada.');
   }
 
-  function renderLandingHeader() {
-    return (
-      <header className="market-header">
-        <div className="market-brand">
-          <span className="market-mark">G</span>
-          <div className="market-brand-text">
-            <strong>Game For All</strong>
-            <span>Marketplace de juegos</span>
-          </div>
-        </div>
 
-        <label className="market-search">
-          <span className="market-search-icon">⌕</span>
-          <input
-            type="search"
-            placeholder="Buscar juegos"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-          />
-        </label>
-
-        <div className="market-actions">
-          <button className="market-button market-button-outline" type="button" onClick={() => setActiveSection('auth')}>
-            Regístrate o inicia sesión
-          </button>
-          <button className="market-button market-button-solid" type="button" onClick={() => setActiveSection('auth')}>
-            <span className="market-plus">+</span>
-            <span>Intercambiar</span>
-          </button>
-        </div>
-      </header>
-    );
-  }
-
-  function renderCategoryStrip() {
-    return (
-      <nav className="category-strip" aria-label="Categorias">
-        <button className="category-menu" type="button" onClick={() => setActiveSection('games')}>
-          ☰
-          <span>Todas las categorías</span>
-        </button>
-
-        <div className="category-links">
-          {marketCategories.slice(1).map((category) => (
-            <button key={category} className="category-link" type="button" onClick={() => setActiveSection('games')}>
-              {category}
-            </button>
-          ))}
-        </div>
-      </nav>
-    );
-  }
 
   function openGameDetail(gameId) {
     setSelectedGameId(gameId);
@@ -1170,99 +1102,7 @@ function App() {
     );
   }
 
-  // eslint-disable-next-line no-unused-vars
-  function renderLanding() {
-    return (
-      <main className="content landing-content">
-        {renderLandingHeader()}
-        {renderCategoryStrip()}
 
-        {status ? <div className="notice success">{status}</div> : null}
-        {error ? <div className="notice error">{error}</div> : null}
-
-        {activeSection === 'auth' ? (
-          <section className="panel auth-layout auth-landing-panel">
-            <div className="auth-copy">
-              <span className="eyebrow">Acceso</span>
-              <h3>Acceso de usuarios</h3>
-            </div>
-
-            <form className="form-card auth-card" onSubmit={handleAuthSubmit}>
-              <div className="toggle-row">
-                <button
-                  type="button"
-                  className={authMode === 'login' ? 'toggle active' : 'toggle'}
-                  onClick={() => setAuthMode('login')}
-                >
-                  Entrar
-                </button>
-                <button
-                  type="button"
-                  className={authMode === 'register' ? 'toggle active' : 'toggle'}
-                  onClick={() => setAuthMode('register')}
-                >
-                  Crear cuenta
-                </button>
-              </div>
-
-              {authMode === 'register' ? (
-                <label>
-                  Username
-                  <input
-                    value={authForm.username}
-                    onChange={(event) =>
-                      setAuthForm((current) => ({ ...current, username: event.target.value }))
-                    }
-                    placeholder="Tu nombre"
-                  />
-                </label>
-              ) : null}
-
-              <label>
-                Email
-                <input
-                  value={authForm.email}
-                  onChange={(event) =>
-                    setAuthForm((current) => ({ ...current, email: event.target.value }))
-                  }
-                  placeholder="correo@ejemplo.com"
-                  type="email"
-                />
-              </label>
-
-              <label>
-                Password
-                <input
-                  value={authForm.password}
-                  onChange={(event) =>
-                    setAuthForm((current) => ({ ...current, password: event.target.value }))
-                  }
-                  placeholder="********"
-                  type="password"
-                />
-              </label>
-
-              <button className="primary-button" type="submit" disabled={loading}>
-                {loading ? 'Procesando...' : authMode === 'login' ? 'Entrar' : 'Crear cuenta'}
-              </button>
-              <p className="hint">
-                Cuenta demo: <strong>admin@gameforall.com</strong> / <strong>admin123</strong>
-              </p>
-            </form>
-          </section>
-        ) : null}
-
-        <footer className="site-footer">
-          <div className="footer-links">
-            <a href="#contact">Contact</a>
-            <a href="#about">About Us</a>
-            <a href="#support">Support</a>
-          </div>
-          <p>@2026 Game For All</p>
-        </footer>
-      </main>
-    );
-  }
 
   // Guest access is now allowed natively
 
