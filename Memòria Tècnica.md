@@ -200,3 +200,33 @@ Los resultados obtenidos en el análisis inicial reflejan un buen compromiso ent
 * **Rendimiento (25/100):** El *First Contentful Paint (FCP)* y el *Largest Contentful Paint (LCP)* muestran tiempos de carga iniciales elevados. Tras analizar el desglose, se concluye que esto es debido al tamaño de los paquetes JavaScript de terceros (como integraciones de utilidades) y archivos de estilos globales no minimizados. Como trabajo futuro, se plantea la implementación de *Lazy Loading* (carga diferida) y la reducción del código JavaScript no utilizado (Code Splitting) para mejorar drásticamente esta métrica.
 
 *(Opcional: Puedes insertar aquí una captura de pantalla de los 4 círculos de puntuación de Lighthouse)*
+
+---
+
+# 5. Conclusiones y Trabajo Futuro
+
+## 5.1. Conclusiones
+El desarrollo del proyecto **Game For All** ha demostrado la viabilidad de crear una plataforma enfocada exclusivamente en el trueque de videojuegos físicos, ofreciendo una alternativa real, sostenible y económica frente a las tiendas tradicionales de recompra de segunda mano. 
+
+A nivel técnico, se han cumplido con éxito todos los objetivos fijados al inicio del proyecto:
+* La correcta modularidad de la arquitectura *Full-stack* desacoplada, permitiendo mantener, desarrollar y desplegar la base de datos, el backend y el frontend de manera independiente.
+* La integración fluida de WebSockets mediante Socket.io, ofreciendo una experiencia interactiva y en tiempo real sin latencias perceptibles para los usuarios.
+* La implementación del protocolo de seguridad JWT y encriptación de datos, garantizando la privacidad de las cuentas creadas por los usuarios.
+* El despliegue automatizado continuo y seguro a través de pipelines de CI/CD.
+
+## 5.2. Trabajo Futuro
+A pesar del éxito del despliegue inicial, se han identificado las siguientes áreas de mejora y futuras ampliaciones de la plataforma:
+1.  **Optimización del Rendimiento (WPO):** Atacar los cuellos de botella identificados en la auditoría de Google Lighthouse mediante la implementación de técnicas de *Code Splitting* (división de código), minificación exhaustiva de hojas de estilo globales y la carga diferida (*lazy loading*) de las imágenes y componentes de las tarjetas de juegos.
+2.  **Pasarela de Envíos y Seguros:** Integrar una API de paquetería (como Correos o Sendcloud) junto con una pasarela de pago seguro (como Stripe) para permitir intercambios a nivel nacional, donde el dinero quede en depósito (*escrow*) hasta que ambas partes reciban sus respectivos videojuegos.
+3.  **Sistema de Verificación de Estado por IA:** Implementar un modelo de visión artificial para que los usuarios puedan subir fotos del estado físico del disco/caja del juego y que el sistema evalúe y asigne el estado de conservación de forma automática e imparcial.
+
+---
+
+# 6. Referencias y Bibliografía
+
+1.  **React.js Documentation:** Official guide and API references for building user interfaces. [https://react.dev](https://react.dev)
+2.  **Express.js Framework:** Fast, unopinionated, minimalist web framework for Node.js. [https://expressjs.com](https://expressjs.com)
+3.  **Socket.io library:** Bidirectional and low-latency communication channels. [https://socket.io](https://socket.io)
+4.  **Tailwind CSS CSS Framework:** Utility-first CSS framework for rapid UI development. [https://tailwindcss.com](https://tailwindcss.com)
+5.  **MySQL 8.0 Reference Manual:** Documentation on database management, index optimizations and SSL pool connections. [https://dev.mysql.com/doc/refman/8.0/en/](https://dev.mysql.com/doc/refman/8.0/en/)
+6.  **Aiven Cloud Database Management:** Technical documentation regarding managed instances, security certificates, and SSL configuration. [https://docs.aiven.io](https://docs.aiven.io)
