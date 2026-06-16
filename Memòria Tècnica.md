@@ -76,12 +76,18 @@ El proyecto se ha desarrollado en un grupo de dos personas siguiendo una metodol
 
 ### 2.1.1. Diagramas de la base de datos (Modelo Entidad-Relación)
 Para garantizar la integridad y consistencia de la información, el diseño de datos se ha estructurado mediante un Modelo Entidad-Relación (MER). Este diagrama define las entidades principales del sistema y cómo interactúan entre ellas. Las tablas centrales incluyen:
-* **Users:** Almacena las credenciales xifradas (con `bcryptjs`), correos electrónicos únicos, roles de usuario y marcas de tiempo.
-* **Games:** Contiene la información de los videojuegos publicados (título, plataforma, género, estado, descripción, imagen y el ID del propietario).
+* **Users:** Almacena las credenciales cifradas (con `bcryptjs`), correos electrónicos únicos, roles de usuario y marcas de tiempo.
+  * *Campos:* `id` (PK, Auto-increment), `username` (VARCHAR(255)), `email` (VARCHAR(255), Unique), `password` (VARCHAR(255)), `role` (VARCHAR(50), default 'user'), `createdAt` (TIMESTAMP).
+* **Games:** Contiene la información de los videojuegos publicados.
+  * *Campos:* `id` (PK, Auto-increment), `title` (VARCHAR(255)), `platform` (VARCHAR(100)), `genre` (VARCHAR(100)), `state` (VARCHAR(50)), `image` (LONGTEXT), `description` (TEXT), `owner_id` (FK a Users), `createdAt` (TIMESTAMP).
 * **Favorites:** Relaciona los usuarios con sus juegos favoritos, garantizando un índice único para evitar duplicados.
-* **Trades:** Registra las solicitudes de intercambio, vinculando al usuario solicitante, el usuario receptor, los juegos implicados y el estado de la transacción (`pending`, `accepted`, `rejected`, `completed`, `cancelled`).
-* **Messages:** Almacena el historial de chat con los campos del emisor, receptor, texto y fecha de envío.
+  * *Campos:* `id` (PK, Auto-increment), `user_id` (FK a Users), `game_id` (FK a Games), `createdAt` (TIMESTAMP).
+* **Trades:** Registra las solicitudes de intercambio, vinculando al usuario solicitante, el usuario receptor, los juegos implicados y el estado de la transacción.
+  * *Campos:* `id` (PK, Auto-increment), `offeredGameId` (FK a Games), `requestedGameId` (FK a Games), `message` (TEXT), `status` (ENUM('pending', 'accepted', 'rejected', 'completed', 'cancelled'), default 'pending'), `requester_id` (FK a Users), `owner_id` (FK a Users), `createdAt` (TIMESTAMP).
+* **Messages:** Almacena el historial de chat de mensajería privada interactiva.
+  * *Campos:* `id` (PK, Auto-increment), `senderId` (FK a Users), `receiverId` (FK a Users), `messageText` (TEXT), `sentAt` (TIMESTAMP).
 * **Ratings:** Contiene las puntuaciones con estrellas y comentarios compartidos entre los usuarios evaluadores y evaluados.
+  * *Campos:* `id` (PK, Auto-increment), `voterId` (FK a Users), `reviewedId` (FK a Users), `stars` (INT), `comment` (TEXT), `createdAt` (TIMESTAMP).
 
 *(Inserta aquí la imagen de tu Diagrama Entidad-Relación)*
 
